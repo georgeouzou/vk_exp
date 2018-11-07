@@ -56,15 +56,18 @@ VkInstance create_instance()
 	return instance;
 }
 
-VkDevice create_device(VkInstance instance, uint32_t *family_index)
+VkPhysicalDevice get_physical_device(VkInstance instance)
 {
 	std::vector<VkPhysicalDevice> phys_devices(2);
 	uint32_t phys_device_count = (uint32_t)phys_devices.size();
 	VK_CHECK(vkEnumeratePhysicalDevices(instance, &phys_device_count, phys_devices.data()));
 
 	VkPhysicalDevice phys_device = choose_physical_device(phys_devices);
-	assert(phys_device);
+	return phys_device;
+}
 
+VkDevice create_device(VkInstance instance, VkPhysicalDevice phys_device, uint32_t *family_index)
+{
 	uint32_t queue_family_count;
 	vkGetPhysicalDeviceQueueFamilyProperties(phys_device, &queue_family_count, nullptr);
 	std::vector<VkQueueFamilyProperties> queue_family_properties(queue_family_count);
@@ -107,13 +110,28 @@ VkSurfaceKHR create_surface(VkInstance instance, GLFWwindow *window)
 	return surface;
 }
 
-VkSwapchainKHR create_swapchain(VkDevice device, VkSurfaceKHR surface, uint32_t family_idx, uint32_t width, uint32_t height)
+VkFormat get_supported_format(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
+	uint32_t fmt_count;
+	VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface, &fmt_count, nullptr));
+	std::vector<VkSurfaceFormatKHR> fmts(fmt_count);
+	VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface, &fmt_count, fmts.data()));
+	return fmts[0].format;
+}
+
+VkSwapchainKHR create_swapchain(VkPhysicalDevice phys_device, VkDevice device, VkSurfaceKHR surface, 
+								uint32_t family_idx, uint32_t width, uint32_t height, VkFormat fmt)
+{
+	// check if surface is supported for presentation
+	VkBool32 supported;
+	VK_CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(phys_device, family_idx, surface, &supported));
+	if (!supported) return VK_NULL_HANDLE;
+
 	VkSwapchainKHR swapchain = 0;
 	VkSwapchainCreateInfoKHR scci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 	scci.surface = surface;
 	scci.minImageCount = 2;
-	scci.imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
+	scci.imageFormat = fmt;
 	scci.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	scci.imageExtent = VkExtent2D{ width, height };
 	scci.imageArrayLayers = 1;
@@ -145,6 +163,67 @@ VkCommandPool create_cmd_pool(VkDevice device, uint32_t family_idx)
 	return cmd_pool;
 }
 
+VkRenderPass create_render_pass(VkDevice device, VkFormat fmt)
+{
+	VkAttachmentDescription attachments[1] = {};
+	attachments[0].format = fmt;
+	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[0].initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+	VkAttachmentReference color_attachments_ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+	VkSubpassDescription subpass = { };
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &color_attachments_ref;
+
+	VkRenderPassCreateInfo rpci = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+	rpci.attachmentCount = sizeof(attachments) / sizeof(attachments[0]);
+	rpci.pAttachments = attachments;
+	rpci.subpassCount = 1;
+	rpci.pSubpasses = &subpass;
+
+	VkRenderPass render_pass = 0;
+	VK_CHECK(vkCreateRenderPass(device, &rpci, 0, &render_pass));
+	return render_pass;
+}
+
+VkFramebuffer create_framebuffer(VkDevice device, VkRenderPass render_pass, 
+								 VkImageView image_view, uint32_t width, uint32_t height)
+{
+	VkFramebufferCreateInfo fbci = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+	fbci.renderPass = render_pass;
+	fbci.attachmentCount = 1;
+	fbci.pAttachments = &image_view;
+	fbci.width = width;
+	fbci.height = height;
+	fbci.layers = 1;
+
+	VkFramebuffer fb = 0;
+	VK_CHECK(vkCreateFramebuffer(device, &fbci, nullptr, &fb));
+	return fb;
+}
+
+VkImageView create_image_view(VkDevice device, VkImage image, VkFormat fmt)
+{
+	VkImageViewCreateInfo ivc = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	ivc.image = image;
+	ivc.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	ivc.format = fmt;
+	ivc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	ivc.subresourceRange.layerCount = 1;
+	ivc.subresourceRange.levelCount = 1;
+	
+	VkImageView img_view = 0;
+	VK_CHECK(vkCreateImageView(device, &ivc, nullptr, &img_view));
+	return img_view;
+}
+
 int main()
 {
 	int rc = glfwInit();
@@ -153,8 +232,11 @@ int main()
 	VkInstance instance = create_instance();
 	assert(instance);
 
+	VkPhysicalDevice phys_device = get_physical_device(instance);
+	assert(phys_device);
+
 	uint32_t family_idx;
-	VkDevice device = create_device(instance, &family_idx);
+	VkDevice device = create_device(instance, phys_device, &family_idx);
 	assert(device);
 
 	GLFWwindow *window = glfwCreateWindow(1024, 720, "vk_exp", nullptr, nullptr);
@@ -162,10 +244,12 @@ int main()
 
 	VkSurfaceKHR surface = create_surface(instance, window);
 	assert(surface);
+
+	VkFormat format = get_supported_format(phys_device, surface);
 	
 	int w, h;
 	glfwGetWindowSize(window, &w, &h);
-	VkSwapchainKHR swapchain = create_swapchain(device, surface, family_idx, w, h);
+	VkSwapchainKHR swapchain = create_swapchain(phys_device, device, surface, family_idx, w, h, format);
 	assert(swapchain);
 
 	VkSemaphore aquire_semaphore = create_semaphore(device);
@@ -180,6 +264,19 @@ int main()
 	vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, nullptr);
 	std::vector<VkImage> swapchain_images(swapchain_image_count);
 	vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, swapchain_images.data());
+
+	VkRenderPass render_pass = create_render_pass(device, format);
+	assert(render_pass);
+
+	std::vector<VkImageView> image_views(swapchain_image_count);
+	for (uint32_t i = 0; i < swapchain_image_count; ++i) {
+		image_views[i] = create_image_view(device, swapchain_images[i], format);
+	}
+
+	std::vector<VkFramebuffer> framebuffers(swapchain_image_count);
+	for (uint32_t i = 0; i < swapchain_image_count; ++i) {
+		framebuffers[i] = create_framebuffer(device, render_pass, image_views[i], w, h);
+	}
 
 	VkCommandPool cmd_pool = create_cmd_pool(device, family_idx);
 	assert(cmd_pool);
@@ -204,11 +301,20 @@ int main()
 		VK_CHECK(vkBeginCommandBuffer(cmd_buf, &cbbi));
 		
 		VkClearColorValue color = { 0.3f, 0.6f, 0.9f, 1.0f };
-		VkImageSubresourceRange range = {};
-		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		range.layerCount = 1;
-		range.levelCount = 1;
-		vkCmdClearColorImage(cmd_buf, swapchain_images[image_idx], VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
+		VkClearValue clear_value;
+		clear_value.color = color;
+
+		VkRenderPassBeginInfo rp_begin_info = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+		rp_begin_info.renderPass = render_pass;
+		rp_begin_info.framebuffer = framebuffers[image_idx];
+		rp_begin_info.renderArea.extent.width = w;
+		rp_begin_info.renderArea.extent.height = h;
+		rp_begin_info.clearValueCount = 1;
+		rp_begin_info.pClearValues = &clear_value;
+	
+		vkCmdBeginRenderPass(cmd_buf, &rp_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+		
+		vkCmdEndRenderPass(cmd_buf);
 
 		VK_CHECK(vkEndCommandBuffer(cmd_buf));
 		
@@ -223,7 +329,7 @@ int main()
 		si.signalSemaphoreCount = 1;
 		si.pSignalSemaphores = &submit_semaphore;
 
-		vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
+		VK_CHECK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
 	
 		VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 		pi.swapchainCount = 1;
