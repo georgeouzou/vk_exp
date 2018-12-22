@@ -7,6 +7,7 @@
 #include <functional>
 #include <vector>
 #include <optional>
+#include <set>
 
 static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
 {
@@ -28,10 +29,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 struct QueueFamilyIndices
 {
 	std::optional<uint32_t> graphics_family;
+	std::optional<uint32_t> present_family;
 	
 	bool is_complete()
 	{
-		return graphics_family.has_value();
+		return graphics_family.has_value() && present_family.has_value();
 	}
 };
 
@@ -61,6 +63,8 @@ private:
 
 	void create_logical_device();
 
+	void create_surface();
+
 
 private:
 	GLFWwindow *m_window{ nullptr };
@@ -74,7 +78,11 @@ private:
 	VkPhysicalDevice m_gpu{ VK_NULL_HANDLE };
 
 	VkDevice m_device{ VK_NULL_HANDLE };
+	VkQueue m_graphics_queue{ VK_NULL_HANDLE };
+	VkQueue m_present_queue{ VK_NULL_HANDLE };
 	
+	VkSurfaceKHR m_surface{ VK_NULL_HANDLE };
+
 };
 
 void BaseApplication::run()
@@ -122,6 +130,9 @@ void BaseApplication::init_vulkan()
 	if (m_enable_validation_layers) {
 		setup_debug_callback();
 	}
+
+	create_surface();
+
 	pick_gpu();
 	create_logical_device();
 }
@@ -136,6 +147,9 @@ void BaseApplication::main_loop()
 void BaseApplication::cleanup()
 {
 	if (m_device) vkDestroyDevice(m_device, nullptr);
+
+	if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+
 	if (m_debug_callback) destroy_debug_callback();
 	if (m_instance) vkDestroyInstance(m_instance, nullptr);
 
@@ -289,9 +303,14 @@ QueueFamilyIndices BaseApplication::find_queue_families(VkPhysicalDevice gpu) co
 	vkGetPhysicalDeviceQueueFamilyProperties(gpu, &family_count, nullptr);
 	std::vector<VkQueueFamilyProperties> families(family_count);
 	vkGetPhysicalDeviceQueueFamilyProperties(gpu, &family_count, families.data());
-
+	
 	int i = 0;
 	for (const auto &family : families) {
+		VkBool32 present_support = false;
+		vkGetPhysicalDeviceSurfaceSupportKHR(gpu, i, m_surface, &present_support);
+		if (family.queueCount > 0 && present_support) {
+			indices.present_family = i;
+		}
 		if (family.queueCount > 0 && family.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
 			indices.graphics_family = i;
 		}
@@ -307,19 +326,29 @@ QueueFamilyIndices BaseApplication::find_queue_families(VkPhysicalDevice gpu) co
 void BaseApplication::create_logical_device()
 {
 	auto family_indices = find_queue_families(m_gpu);
-	VkDeviceQueueCreateInfo qci = {};
-	qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-	qci.queueFamilyIndex = family_indices.graphics_family.value();
-	qci.queueCount = 1;
-	float queue_priority = 1.0f;
-	qci.pQueuePriorities = &queue_priority;
+
+	std::set<uint32_t> unique_queue_families = {
+		family_indices.graphics_family.value(),
+		family_indices.present_family.value(),
+	};
 	
+	std::vector<VkDeviceQueueCreateInfo> qcis;
+	float queue_priority = 1.0f;
+	for (uint32_t fidx : unique_queue_families) {
+		VkDeviceQueueCreateInfo qci = {};
+		qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+		qci.queueFamilyIndex = fidx;
+		qci.queueCount = 1;
+		qci.pQueuePriorities = &queue_priority;
+		qcis.push_back(qci);
+	}
+
 	VkPhysicalDeviceFeatures device_features = {};
 
 	VkDeviceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-	ci.pQueueCreateInfos = &qci;
-	ci.queueCreateInfoCount = 1;
+	ci.pQueueCreateInfos = qcis.data();
+	ci.queueCreateInfoCount = static_cast<uint32_t>(qcis.size());
 	ci.pEnabledFeatures = &device_features;
 
 	ci.enabledExtensionCount = 0;
@@ -334,6 +363,16 @@ void BaseApplication::create_logical_device()
 		throw std::runtime_error("failed to create logical device");
 	}
 
+	vkGetDeviceQueue(m_device, family_indices.graphics_family.value(), 0, &m_graphics_queue);
+	vkGetDeviceQueue(m_device, family_indices.present_family.value(), 0, &m_present_queue);
+}
+
+void BaseApplication::create_surface()
+{
+	auto res = glfwCreateWindowSurface(m_instance, m_window, nullptr, &m_surface);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create window surface");
+	}
 }
 
 int main()
