@@ -1,4 +1,5 @@
 #define GLFW_INCLUDE_VULKAN
+#define NOMINMAX
 #include <GLFW/glfw3.h>
 
 #include <cstdio>
@@ -8,6 +9,8 @@
 #include <vector>
 #include <optional>
 #include <set>
+#include <limits>
+#include <algorithm>
 
 static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
 {
@@ -37,6 +40,13 @@ struct QueueFamilyIndices
 	}
 };
 
+struct SwapchainSupportDetails
+{
+	VkSurfaceCapabilitiesKHR capabilities;
+	std::vector<VkSurfaceFormatKHR> formats;
+	std::vector<VkPresentModeKHR> present_modes;
+};
+
 class BaseApplication
 {
 public:
@@ -58,20 +68,30 @@ private:
 	void destroy_debug_callback();
 
 	void pick_gpu();
+	bool check_device_extension_support(VkPhysicalDevice gpu) const;
 	bool is_gpu_suitable(VkPhysicalDevice gpu) const;
 	QueueFamilyIndices find_queue_families(VkPhysicalDevice gpu) const;
 
 	void create_logical_device();
 
 	void create_surface();
+	
+	SwapchainSupportDetails query_swapchain_support(VkPhysicalDevice gpu) const;
+	VkSurfaceFormatKHR choose_swap_surface_format(const std::vector<VkSurfaceFormatKHR> &formats) const;
+	VkPresentModeKHR choose_swap_present_mode(const std::vector<VkPresentModeKHR> modes) const;
+	VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR &capabilities) const;
+	void create_swapchain();
 
 
 private:
 	GLFWwindow *m_window{ nullptr };
 	uint32_t m_width{ 1024 };
 	uint32_t m_height{ 768 };
+
 	std::vector<const char*> m_validation_layers;
 	bool m_enable_validation_layers;
+
+	std::vector<const char*> m_device_extensions;
 
 	VkInstance m_instance{ VK_NULL_HANDLE };
 	VkDebugUtilsMessengerEXT m_debug_callback{ VK_NULL_HANDLE };
@@ -83,6 +103,7 @@ private:
 	
 	VkSurfaceKHR m_surface{ VK_NULL_HANDLE };
 
+	VkSwapchainKHR m_swapchain{ VK_NULL_HANDLE };
 };
 
 void BaseApplication::run()
@@ -100,6 +121,8 @@ BaseApplication::BaseApplication()
 #else 
 	m_enable_validation_layers = true;
 #endif
+
+	m_device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 }
 
 BaseApplication::~BaseApplication()
@@ -135,6 +158,8 @@ void BaseApplication::init_vulkan()
 
 	pick_gpu();
 	create_logical_device();
+
+	create_swapchain();
 }
 
 void BaseApplication::main_loop()
@@ -146,6 +171,8 @@ void BaseApplication::main_loop()
 
 void BaseApplication::cleanup()
 {
+	if (m_swapchain) vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+
 	if (m_device) vkDestroyDevice(m_device, nullptr);
 
 	if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
@@ -282,6 +309,23 @@ void BaseApplication::pick_gpu()
 	}
 }
 
+bool BaseApplication::check_device_extension_support(VkPhysicalDevice gpu) const
+{
+	uint32_t ext_count = 0;
+	vkEnumerateDeviceExtensionProperties(gpu, nullptr, &ext_count, nullptr);
+	std::vector<VkExtensionProperties> available_exts(ext_count);
+	vkEnumerateDeviceExtensionProperties(gpu, nullptr, &ext_count, available_exts.data());
+
+	std::set<std::string> required_exts(m_device_extensions.begin(), m_device_extensions.end());
+	// if the required extension is supported it will be checked off of the set
+	// so if in the end the set is empty then all requirements are fullfilled
+	for (const auto &ext : available_exts) {
+		required_exts.erase(ext.extensionName);
+	}
+	
+	return required_exts.empty();
+}
+
 bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 {
 	VkPhysicalDeviceProperties props;
@@ -291,8 +335,15 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 	
 	auto indices = find_queue_families(gpu);
 
-	return props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
-		indices.is_complete();
+	bool extensions_supported = check_device_extension_support(gpu);
+	bool swapchain_adequate = false;
+	if (extensions_supported) {
+		auto chain_details = query_swapchain_support(gpu);
+		swapchain_adequate = !chain_details.formats.empty() && 
+			!chain_details.present_modes.empty();
+	}
+	
+	return indices.is_complete() && extensions_supported && swapchain_adequate;
 }
 
 QueueFamilyIndices BaseApplication::find_queue_families(VkPhysicalDevice gpu) const
@@ -351,7 +402,8 @@ void BaseApplication::create_logical_device()
 	ci.queueCreateInfoCount = static_cast<uint32_t>(qcis.size());
 	ci.pEnabledFeatures = &device_features;
 
-	ci.enabledExtensionCount = 0;
+	ci.enabledExtensionCount = static_cast<uint32_t>(m_device_extensions.size());
+	ci.ppEnabledExtensionNames = m_device_extensions.data();
 	if (m_enable_validation_layers) {
 		ci.enabledLayerCount = static_cast<uint32_t>(m_validation_layers.size());
 		ci.ppEnabledLayerNames = m_validation_layers.data();
@@ -373,6 +425,131 @@ void BaseApplication::create_surface()
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to create window surface");
 	}
+}
+
+SwapchainSupportDetails BaseApplication::query_swapchain_support(VkPhysicalDevice gpu) const
+{
+	SwapchainSupportDetails details;
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, m_surface, &details.capabilities);
+	
+	uint32_t format_count;
+	vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, m_surface, &format_count, nullptr);
+	if (format_count != 0) {
+		details.formats.resize(format_count);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, m_surface, 
+			&format_count, details.formats.data());
+	}
+
+	uint32_t present_mode_count;
+	vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, m_surface, &present_mode_count, nullptr);
+	if (present_mode_count != 0) {
+		details.present_modes.resize(present_mode_count);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, m_surface,
+											 &present_mode_count, details.present_modes.data());
+	}
+
+	return details;
+}
+
+VkSurfaceFormatKHR BaseApplication::choose_swap_surface_format(const std::vector<VkSurfaceFormatKHR>& formats) const
+{
+	if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
+		// best case scenario
+		return { VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+	}
+
+	for (const auto &f : formats) {
+		if (f.format == VK_FORMAT_B8G8R8A8_UNORM && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+			return f;
+		}
+	}
+
+	return formats[0];
+}
+
+VkPresentModeKHR BaseApplication::choose_swap_present_mode(const std::vector<VkPresentModeKHR> modes) const
+{
+	// vulkan guarantees that fifo is available
+	VkPresentModeKHR best_mode = VK_PRESENT_MODE_FIFO_KHR;
+
+	for (const auto &m : modes) {
+		// check if we can use triple buffering
+		if (m == VK_PRESENT_MODE_MAILBOX_KHR) {
+			return m;
+		} else if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+			// some drivers do not properly support fifo so if immediate is available choose this
+			best_mode = m;
+		}
+	}
+	return best_mode;
+}
+
+VkExtent2D BaseApplication::choose_swap_extent(const VkSurfaceCapabilitiesKHR & capabilities) const
+{
+	if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+		return capabilities.currentExtent;
+	} else {
+		VkExtent2D actual = { m_width, m_height };
+		uint32_t min_width = capabilities.minImageExtent.width;
+		uint32_t max_width = capabilities.maxImageExtent.width;
+		uint32_t min_height = capabilities.minImageExtent.height;
+		uint32_t max_height = capabilities.maxImageExtent.height;
+		actual.width = std::max(min_width, std::min(max_width, actual.width));
+		actual.height = std::max(min_height, std::min(max_height, actual.height));
+		return actual;
+	}
+}
+
+void BaseApplication::create_swapchain()
+{
+	auto details = query_swapchain_support(m_gpu);
+	auto format = choose_swap_surface_format(details.formats);
+	auto present_mode = choose_swap_present_mode(details.present_modes);
+	auto extent = choose_swap_extent(details.capabilities);
+
+	// triple buf
+	uint32_t img_count = details.capabilities.minImageCount + 1;
+	// a value of 0 for maxImageCount means unlimited
+	if (details.capabilities.maxImageCount > 0 && img_count > details.capabilities.maxImageCount) {
+		img_count = details.capabilities.maxImageCount;
+	}
+
+	auto family_indices = find_queue_families(m_gpu);
+	uint32_t queue_family_indices[] = {
+		family_indices.graphics_family.value(),
+		family_indices.present_family.value(),
+	};
+
+	VkSwapchainCreateInfoKHR ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+	ci.surface = m_surface;
+	ci.minImageCount = img_count;
+	ci.imageFormat = format.format;
+	ci.imageColorSpace = format.colorSpace;
+	ci.imageExtent = extent;
+	ci.imageArrayLayers = 1; // this is for stereo
+	ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+	if (family_indices.graphics_family != family_indices.present_family) {
+		ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+		ci.queueFamilyIndexCount = 2;
+		ci.pQueueFamilyIndices = queue_family_indices;
+	} else {
+		ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		ci.queueFamilyIndexCount = 0; // optional
+		ci.pQueueFamilyIndices = nullptr; // optional
+	}
+	ci.preTransform = details.capabilities.currentTransform;
+	ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+	ci.presentMode = present_mode;
+	ci.clipped = VK_TRUE;
+	ci.oldSwapchain = VK_NULL_HANDLE;
+
+	auto res = vkCreateSwapchainKHR(m_device, &ci, nullptr, &m_swapchain);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create swapchain");
+	}
+
 }
 
 int main()
