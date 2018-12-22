@@ -23,6 +23,11 @@ target_link_libraries(${app} glfw ${GLFW_LIBRARIES})
 target_include_directories(${app} PRIVATE ${GLFW_DIR}/include)
 target_compile_definitions(${app} PRIVATE "GLFW_INCLUDE_NONE")
 
+# glm
+set(GLM_DIR "${EXTERN_DIR}/glm")
+target_include_directories(${app} PRIVATE ${GLM_DIR})
+
+
 # vulkan
 
 find_package(Vulkan)

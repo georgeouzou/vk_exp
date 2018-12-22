@@ -7,6 +7,7 @@
 #include <GLFW/glfw3native.h>
 #include <vulkan/vulkan.h>
 
+
 #define VK_CHECK(call)\
 	do {\
 		VkResult __res = call;\
