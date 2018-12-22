@@ -9,7 +9,7 @@ set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(src src/main.cpp)
 
 add_executable(${app} ${src})
-set_property(TARGET ${app} PROPERTY CXX_STANDARD 11)
+set_property(TARGET ${app} PROPERTY CXX_STANDARD 17)
 
 # glfw
 

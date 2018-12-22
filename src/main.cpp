@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <functional>
 #include <vector>
+#include <optional>
 
 static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
 {
@@ -23,6 +24,16 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 	fprintf(stderr, "validation layer: %s\n", p_callback_data->pMessage);
 	return VK_FALSE;
 }
+
+struct QueueFamilyIndices
+{
+	std::optional<uint32_t> graphics_family;
+	
+	bool is_complete()
+	{
+		return graphics_family.has_value();
+	}
+};
 
 class BaseApplication
 {
@@ -44,16 +55,26 @@ private:
 	void setup_debug_callback();
 	void destroy_debug_callback();
 
+	void pick_gpu();
+	bool is_gpu_suitable(VkPhysicalDevice gpu) const;
+	QueueFamilyIndices find_queue_families(VkPhysicalDevice gpu) const;
+
+	void create_logical_device();
+
+
 private:
 	GLFWwindow *m_window{ nullptr };
 	uint32_t m_width{ 1024 };
 	uint32_t m_height{ 768 };
+	std::vector<const char*> m_validation_layers;
+	bool m_enable_validation_layers;
 
 	VkInstance m_instance{ VK_NULL_HANDLE };
 	VkDebugUtilsMessengerEXT m_debug_callback{ VK_NULL_HANDLE };
+	VkPhysicalDevice m_gpu{ VK_NULL_HANDLE };
 
-	std::vector<const char*> m_validation_layers;
-	bool m_enable_validation_layers;
+	VkDevice m_device{ VK_NULL_HANDLE };
+	
 };
 
 void BaseApplication::run()
@@ -101,6 +122,8 @@ void BaseApplication::init_vulkan()
 	if (m_enable_validation_layers) {
 		setup_debug_callback();
 	}
+	pick_gpu();
+	create_logical_device();
 }
 
 void BaseApplication::main_loop()
@@ -112,6 +135,7 @@ void BaseApplication::main_loop()
 
 void BaseApplication::cleanup()
 {
+	if (m_device) vkDestroyDevice(m_device, nullptr);
 	if (m_debug_callback) destroy_debug_callback();
 	if (m_instance) vkDestroyInstance(m_instance, nullptr);
 
@@ -222,6 +246,94 @@ void BaseApplication::destroy_debug_callback()
 	auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
 		m_instance, "vkDestroyDebugUtilsMessengerEXT");
 	if (func) func(m_instance, m_debug_callback, nullptr);
+}
+
+void BaseApplication::pick_gpu()
+{
+	uint32_t gpu_count = 0;
+	vkEnumeratePhysicalDevices(m_instance, &gpu_count, nullptr);
+	if (gpu_count == 0) {
+		throw std::runtime_error("failed to find at least one GPU with Vulkan support");
+	}
+	std::vector<VkPhysicalDevice> gpus(gpu_count);
+	vkEnumeratePhysicalDevices(m_instance, &gpu_count, gpus.data());
+	
+	for (const auto &gpu : gpus) {
+		if (is_gpu_suitable(gpu)) {
+			m_gpu = gpu; break;
+		}
+	}
+	if (m_gpu == VK_NULL_HANDLE) {
+		throw std::runtime_error("failed to find at least one suitable GPU");
+	}
+}
+
+bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
+{
+	VkPhysicalDeviceProperties props;
+	vkGetPhysicalDeviceProperties(gpu, &props);
+	VkPhysicalDeviceFeatures features;
+	vkGetPhysicalDeviceFeatures(gpu, &features);
+	
+	auto indices = find_queue_families(gpu);
+
+	return props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+		indices.is_complete();
+}
+
+QueueFamilyIndices BaseApplication::find_queue_families(VkPhysicalDevice gpu) const
+{
+	QueueFamilyIndices indices;
+
+	uint32_t family_count = 0;
+	vkGetPhysicalDeviceQueueFamilyProperties(gpu, &family_count, nullptr);
+	std::vector<VkQueueFamilyProperties> families(family_count);
+	vkGetPhysicalDeviceQueueFamilyProperties(gpu, &family_count, families.data());
+
+	int i = 0;
+	for (const auto &family : families) {
+		if (family.queueCount > 0 && family.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+			indices.graphics_family = i;
+		}
+		if (indices.is_complete()) {
+			break;
+		}
+		i++;
+	}
+
+	return indices;
+}
+
+void BaseApplication::create_logical_device()
+{
+	auto family_indices = find_queue_families(m_gpu);
+	VkDeviceQueueCreateInfo qci = {};
+	qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	qci.queueFamilyIndex = family_indices.graphics_family.value();
+	qci.queueCount = 1;
+	float queue_priority = 1.0f;
+	qci.pQueuePriorities = &queue_priority;
+	
+	VkPhysicalDeviceFeatures device_features = {};
+
+	VkDeviceCreateInfo ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+	ci.pQueueCreateInfos = &qci;
+	ci.queueCreateInfoCount = 1;
+	ci.pEnabledFeatures = &device_features;
+
+	ci.enabledExtensionCount = 0;
+	if (m_enable_validation_layers) {
+		ci.enabledLayerCount = static_cast<uint32_t>(m_validation_layers.size());
+		ci.ppEnabledLayerNames = m_validation_layers.data();
+	} else {
+		ci.enabledLayerCount = 0;
+	}
+	auto res = vkCreateDevice(m_gpu, &ci, nullptr, &m_device);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create logical device");
+	}
+
 }
 
 int main()
