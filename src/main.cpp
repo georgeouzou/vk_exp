@@ -81,6 +81,7 @@ private:
 	VkPresentModeKHR choose_swap_present_mode(const std::vector<VkPresentModeKHR> modes) const;
 	VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR &capabilities) const;
 	void create_swapchain();
+	void create_image_views();
 
 
 private:
@@ -104,6 +105,10 @@ private:
 	VkSurfaceKHR m_surface{ VK_NULL_HANDLE };
 
 	VkSwapchainKHR m_swapchain{ VK_NULL_HANDLE };
+	std::vector<VkImage> m_swapchain_images;
+	VkFormat m_swapchain_img_format;
+	VkExtent2D m_swapchain_extent;
+	std::vector<VkImageView> m_swapchain_img_views;
 };
 
 void BaseApplication::run()
@@ -160,6 +165,7 @@ void BaseApplication::init_vulkan()
 	create_logical_device();
 
 	create_swapchain();
+	create_image_views();
 }
 
 void BaseApplication::main_loop()
@@ -171,6 +177,9 @@ void BaseApplication::main_loop()
 
 void BaseApplication::cleanup()
 {
+	for (auto img_view : m_swapchain_img_views) {
+		vkDestroyImageView(m_device, img_view, nullptr);
+	}
 	if (m_swapchain) vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
 
 	if (m_device) vkDestroyDevice(m_device, nullptr);
@@ -550,6 +559,37 @@ void BaseApplication::create_swapchain()
 		throw std::runtime_error("failed to create swapchain");
 	}
 
+	// store images created and owned by the swapchain
+	vkGetSwapchainImagesKHR(m_device, m_swapchain, &img_count, nullptr);
+	m_swapchain_images.resize(img_count);
+	vkGetSwapchainImagesKHR(m_device, m_swapchain, &img_count, m_swapchain_images.data());
+
+	// store format and extent
+	m_swapchain_extent = extent;
+	m_swapchain_img_format = format.format;
+}
+
+void BaseApplication::create_image_views()
+{
+	m_swapchain_img_views.resize(m_swapchain_images.size());
+	for (size_t i = 0; i < m_swapchain_images.size(); ++i) {
+		VkImageViewCreateInfo ci = {};
+		ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		ci.image = m_swapchain_images[i];
+		ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		ci.format = m_swapchain_img_format;
+		ci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+		ci.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+		ci.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+		ci.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+		ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		ci.subresourceRange.baseMipLevel = 0;
+		ci.subresourceRange.levelCount = 1;
+		ci.subresourceRange.baseArrayLayer = 0;
+		ci.subresourceRange.layerCount = 1;
+		auto res = vkCreateImageView(m_device, &ci, nullptr, &m_swapchain_img_views[i]);
+		if (!res) { throw std::runtime_error("failed to create image views"); }
+	}
 }
 
 int main()
