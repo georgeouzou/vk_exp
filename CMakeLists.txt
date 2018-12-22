@@ -57,10 +57,10 @@ file(GLOB_RECURSE GLSL_SRC_FILES
 
 foreach(GLSL ${GLSL_SRC_FILES})
 	get_filename_component(FILE_NAME ${GLSL} NAME)
-	set(SPIRV "${PROJECT_BINARY_DIR}/shaders/${FILE_NAME}.spv")
+	set(SPIRV "${PROJECT_BINARY_DIR}/spirv_files/${FILE_NAME}.spv")
 	add_custom_command(
 		OUTPUT ${SPIRV}
-		COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_BINARY_DIR}/shaders/"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_BINARY_DIR}/spirv_files/"
 		COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
 		DEPENDS ${GLSL}
 	)
@@ -77,6 +77,6 @@ add_dependencies(${app} Shaders)
 add_custom_command(TARGET ${app} POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/shaders/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
-		"${PROJECT_BINARY_DIR}/shaders"
+		"${PROJECT_BINARY_DIR}/spirv_files"
 		"$<TARGET_FILE_DIR:${app}>/shaders"
 )
