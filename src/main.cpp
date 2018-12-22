@@ -83,6 +83,8 @@ private:
 	void create_swapchain();
 	void create_image_views();
 
+	void create_graphics_pipeline();
+
 
 private:
 	GLFWwindow *m_window{ nullptr };
@@ -590,6 +592,10 @@ void BaseApplication::create_image_views()
 		auto res = vkCreateImageView(m_device, &ci, nullptr, &m_swapchain_img_views[i]);
 		if (!res) { throw std::runtime_error("failed to create image views"); }
 	}
+}
+
+void BaseApplication::create_graphics_pipeline()
+{
 }
 
 int main()

@@ -5,6 +5,7 @@ set(app VulkanExperiments)
 project(${app})
 
 set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
+set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 
 set(src src/main.cpp)
 
@@ -27,7 +28,6 @@ target_compile_definitions(${app} PRIVATE "GLFW_INCLUDE_NONE")
 set(GLM_DIR "${EXTERN_DIR}/glm")
 target_include_directories(${app} PRIVATE ${GLM_DIR})
 
-
 # vulkan
 
 find_package(Vulkan)
@@ -41,3 +41,42 @@ if (WIN32)
 	target_compile_definitions(${app} PRIVATE "VK_USE_PLATFORM_WIN32_KHR")
 	target_compile_definitions(${app} PRIVATE "GLFW_EXPOSE_NATIVE_WIN32")
 endif()
+
+# compile shaders
+
+if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")
+	set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe")
+else()
+	message(FATAL_ERROR "32-bit systems are not supported!")
+endif()
+
+file(GLOB_RECURSE GLSL_SRC_FILES
+	"${SHADER_DIR}/*.frag"
+	"${SHADER_DIR}/*.vert"
+)
+
+foreach(GLSL ${GLSL_SRC_FILES})
+	get_filename_component(FILE_NAME ${GLSL} NAME)
+	set(SPIRV "${PROJECT_BINARY_DIR}/shaders/${FILE_NAME}.spv")
+	add_custom_command(
+		OUTPUT ${SPIRV}
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_BINARY_DIR}/shaders/"
+		COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
+		DEPENDS ${GLSL}
+	)
+	list(APPEND SPIRV_BINARY_FILES ${SPIRV})
+endforeach(GLSL)
+
+add_custom_target(
+	Shaders
+	DEPENDS ${SPIRV_BINARY_FILES}
+)
+
+add_dependencies(${app} Shaders)
+
+add_custom_command(TARGET ${app} POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/shaders/"
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		"${PROJECT_BINARY_DIR}/shaders"
+		"$<TARGET_FILE_DIR:${app}>/shaders"
+)
