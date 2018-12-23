@@ -1,7 +1,3 @@
-#define GLFW_INCLUDE_VULKAN
-#define NOMINMAX
-#include <GLFW/glfw3.h>
-
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -13,6 +9,11 @@
 #include <algorithm>
 #include <fstream>
 #include <array>
+
+#define GLFW_INCLUDE_VULKAN
+#define NOMINMAX
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 
@@ -32,6 +33,37 @@ struct SwapchainSupportDetails
 	VkSurfaceCapabilitiesKHR capabilities;
 	std::vector<VkSurfaceFormatKHR> formats;
 	std::vector<VkPresentModeKHR> present_modes;
+};
+
+struct Vertex
+{
+	glm::vec2 pos;
+	glm::vec3 color;
+
+	static VkVertexInputBindingDescription get_binding_description()
+	{
+		VkVertexInputBindingDescription bd = {};
+		bd.binding = 0;
+		bd.stride = sizeof(Vertex);
+		bd.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+		return bd;
+	}
+
+	static std::array<VkVertexInputAttributeDescription, 2>
+		get_attribture_descriptions()
+	{
+		std::array<VkVertexInputAttributeDescription, 2> ad;
+		ad[0].binding = 0;
+		ad[0].location = 0;
+		ad[0].format = VK_FORMAT_R32G32_SFLOAT;
+		ad[0].offset = offsetof(Vertex, pos);
+		ad[1].binding = 0;
+		ad[1].location = 1;
+		ad[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+		ad[1].offset = offsetof(Vertex, color);
+
+		return ad;
+	}
 };
 
 class BaseApplication
@@ -75,6 +107,9 @@ private:
 	void create_graphics_pipeline();
 	VkShaderModule create_shader_module(const std::vector<char> &code) const;
 	void create_framebuffers();
+	
+	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
+	void create_vertex_buffer();
 
 	void create_command_pool();
 	void create_command_buffers();
@@ -118,6 +153,10 @@ private:
 	VkRenderPass m_render_pass{ VK_NULL_HANDLE };
 	VkPipelineLayout m_pipeline_layout{ VK_NULL_HANDLE };
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
+
+	VkBuffer m_vertex_buffer;
+	VkDeviceMemory m_memory;
+	uint32_t m_num_vertices;
 
 	VkCommandPool m_cmd_pool{ VK_NULL_HANDLE };
 	std::vector<VkCommandBuffer> m_cmd_buffers;
@@ -226,6 +265,8 @@ void BaseApplication::init_vulkan()
 	create_graphics_pipeline();
 	create_framebuffers();
 
+	create_vertex_buffer();
+
 	create_command_pool();
 	create_command_buffers();
 
@@ -261,6 +302,9 @@ void BaseApplication::cleanup_swapchain()
 void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
+
+	vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
+	vkFreeMemory(m_device, m_memory, nullptr);
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 		vkDestroyFence(m_device, m_fen_flight[i], nullptr);
@@ -755,12 +799,15 @@ void BaseApplication::create_graphics_pipeline()
 	};
 
 	// 2. Vertex Input 
+	auto binding_desc = Vertex::get_binding_description();
+	auto attrib_desc = Vertex::get_attribture_descriptions();
+
 	VkPipelineVertexInputStateCreateInfo vici = {};
 	vici.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vici.vertexBindingDescriptionCount = 0;
-	vici.pVertexBindingDescriptions = nullptr;
-	vici.vertexAttributeDescriptionCount = 0;
-	vici.pVertexAttributeDescriptions = nullptr;
+	vici.vertexBindingDescriptionCount = 1;
+	vici.pVertexBindingDescriptions = &binding_desc;
+	vici.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrib_desc.size());
+	vici.pVertexAttributeDescriptions = attrib_desc.data();
 
 	// 3. Input Assembly
 	VkPipelineInputAssemblyStateCreateInfo iaci = {};
@@ -917,6 +964,61 @@ void BaseApplication::create_framebuffers()
 	}
 }
 
+uint32_t BaseApplication::find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const
+{
+	VkPhysicalDeviceMemoryProperties mem_props;
+	vkGetPhysicalDeviceMemoryProperties(m_gpu, &mem_props);
+	for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+		if (type_filter & (1 << i) && 
+				(mem_props.memoryTypes[i].propertyFlags & props) == props) {
+			return i;
+		}
+	}
+
+	throw std::runtime_error("failed to find suitable memory type");
+	return 0;
+}
+
+void BaseApplication::create_vertex_buffer()
+{
+	const std::vector<Vertex> vertices = {
+		{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+		{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+		{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+	};
+
+	VkBufferCreateInfo bi = {};
+	bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bi.size = sizeof(Vertex) * vertices.size();
+	bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+	auto res = vkCreateBuffer(m_device, &bi, nullptr, &m_vertex_buffer);
+	if (res !=VK_SUCCESS) throw std::runtime_error("failed to create vertex buffer");
+
+	VkMemoryRequirements mem_req;
+	vkGetBufferMemoryRequirements(m_device, m_vertex_buffer, &mem_req);
+	VkMemoryAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	ai.allocationSize = mem_req.size;
+	ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits,
+										  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+										  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	res = vkAllocateMemory(m_device, &ai, nullptr, &m_memory);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+	vkBindBufferMemory(m_device, m_vertex_buffer, m_memory, 0);
+	
+	void *data;
+	res = vkMapMemory(m_device, m_memory, 0, bi.size, 0, &data);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
+	std::memcpy(data, vertices.data(), bi.size);
+	vkUnmapMemory(m_device, m_memory);
+
+	m_num_vertices = vertices.size();
+}
+
 void BaseApplication::create_command_pool()
 {
 	auto indices = find_queue_families(m_gpu);
@@ -968,7 +1070,12 @@ void BaseApplication::create_command_buffers()
 
 		vkCmdBeginRenderPass(m_cmd_buffers[i], &rpbi, VK_SUBPASS_CONTENTS_INLINE);
 		vkCmdBindPipeline(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
-		vkCmdDraw(m_cmd_buffers[i], 3, 1, 0, 0);
+		
+		VkBuffer buffers[] = { m_vertex_buffer };
+		VkDeviceSize offsets[] = { 0 };
+		vkCmdBindVertexBuffers(m_cmd_buffers[i], 0, 1, buffers, offsets);
+
+		vkCmdDraw(m_cmd_buffers[i], m_num_vertices, 1, 0, 0);
 
 		vkCmdEndRenderPass(m_cmd_buffers[i]);
 
