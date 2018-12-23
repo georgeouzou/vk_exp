@@ -21,10 +21,12 @@ struct QueueFamilyIndices
 {
 	std::optional<uint32_t> graphics_family;
 	std::optional<uint32_t> present_family;
+	std::optional<uint32_t> transfer_family;
 	
 	bool is_complete()
 	{
-		return graphics_family.has_value() && present_family.has_value();
+		return graphics_family.has_value() && present_family.has_value()
+			&& transfer_family.has_value();
 	}
 };
 
@@ -109,9 +111,16 @@ private:
 	void create_framebuffers();
 	
 	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
-	void create_vertex_buffer();
+	
 
-	void create_command_pool();
+	void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
+					   VkMemoryPropertyFlags props, VkBuffer &buffer, VkDeviceMemory &memory);
+	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
+	
+	void create_vertex_buffer();
+	
+
+	void create_command_pools();
 	void create_command_buffers();
 	
 	void create_sync_objects();
@@ -140,6 +149,7 @@ private:
 	VkDevice m_device{ VK_NULL_HANDLE };
 	VkQueue m_graphics_queue{ VK_NULL_HANDLE };
 	VkQueue m_present_queue{ VK_NULL_HANDLE };
+	VkQueue m_transfer_queue{ VK_NULL_HANDLE };
 	
 	VkSurfaceKHR m_surface{ VK_NULL_HANDLE };
 
@@ -159,6 +169,7 @@ private:
 	uint32_t m_num_vertices;
 
 	VkCommandPool m_cmd_pool{ VK_NULL_HANDLE };
+	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
 	std::vector<VkCommandBuffer> m_cmd_buffers;
 	
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_img_available{ VK_NULL_HANDLE };
@@ -265,9 +276,9 @@ void BaseApplication::init_vulkan()
 	create_graphics_pipeline();
 	create_framebuffers();
 
-	create_vertex_buffer();
+	create_command_pools();
 
-	create_command_pool();
+	create_vertex_buffer();
 	create_command_buffers();
 
 	create_sync_objects();
@@ -311,6 +322,7 @@ void BaseApplication::cleanup()
 		vkDestroySemaphore(m_device, m_sem_img_available[i], nullptr);
 		vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
 	}
+	if (m_transfer_cmd_pool) vkDestroyCommandPool(m_device, m_transfer_cmd_pool, nullptr);
 	if (m_cmd_pool) vkDestroyCommandPool(m_device, m_cmd_pool, nullptr);
 	if (m_device) vkDestroyDevice(m_device, nullptr);
 	if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
@@ -503,6 +515,11 @@ QueueFamilyIndices BaseApplication::find_queue_families(VkPhysicalDevice gpu) co
 		if (family.queueCount > 0 && family.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
 			indices.graphics_family = i;
 		}
+		if (family.queueCount > 0 && (family.queueFlags & VK_QUEUE_TRANSFER_BIT)
+				&& !(family.queueFlags & VK_QUEUE_COMPUTE_BIT)
+				&& !(family.queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+			indices.transfer_family = i;
+		}
 		if (indices.is_complete()) {
 			break;
 		}
@@ -519,6 +536,7 @@ void BaseApplication::create_logical_device()
 	std::set<uint32_t> unique_queue_families = {
 		family_indices.graphics_family.value(),
 		family_indices.present_family.value(),
+		family_indices.transfer_family.value()
 	};
 	
 	std::vector<VkDeviceQueueCreateInfo> qcis;
@@ -555,6 +573,7 @@ void BaseApplication::create_logical_device()
 
 	vkGetDeviceQueue(m_device, family_indices.graphics_family.value(), 0, &m_graphics_queue);
 	vkGetDeviceQueue(m_device, family_indices.present_family.value(), 0, &m_present_queue);
+	vkGetDeviceQueue(m_device, family_indices.transfer_family.value(), 0, &m_transfer_queue);
 }
 
 void BaseApplication::create_surface()
@@ -979,6 +998,79 @@ uint32_t BaseApplication::find_memory_type(uint32_t type_filter, VkMemoryPropert
 	return 0;
 }
 
+void BaseApplication::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
+									VkMemoryPropertyFlags props, 
+									VkBuffer &buffer, VkDeviceMemory &memory)
+{
+	auto indices = find_queue_families(m_gpu);
+	uint32_t qidx[] = {
+		indices.graphics_family.value(),
+		indices.transfer_family.value(),
+	};
+
+	VkBufferCreateInfo bi = {};
+	bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bi.size = size;
+	bi.usage = usage;
+	bi.sharingMode = VK_SHARING_MODE_CONCURRENT;
+	bi.pQueueFamilyIndices = qidx;
+	bi.queueFamilyIndexCount = 2;
+
+	auto res = vkCreateBuffer(m_device, &bi, nullptr, &buffer);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+	VkMemoryRequirements mem_req;
+	vkGetBufferMemoryRequirements(m_device, buffer, &mem_req);
+	VkMemoryAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	ai.allocationSize = mem_req.size;
+	ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, props);
+
+	res = vkAllocateMemory(m_device, &ai, nullptr, &memory);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+	vkBindBufferMemory(m_device, buffer, memory, 0);
+}
+
+void BaseApplication::copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size)
+{
+	VkCommandBufferAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	ai.commandPool = m_transfer_cmd_pool;
+	ai.commandBufferCount = 1;
+	VkCommandBuffer cmd_buf;
+	
+	auto res = vkAllocateCommandBuffers(m_device, &ai, &cmd_buf);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate command buffer");
+	
+	VkCommandBufferBeginInfo bi = {};
+	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	res = vkBeginCommandBuffer(cmd_buf, &bi);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to begin command buffer");
+	VkBufferCopy cpy = {};
+	cpy.srcOffset = 0;
+	cpy.dstOffset = 0;
+	cpy.size = size;
+	
+	vkCmdCopyBuffer(cmd_buf, src, dst, 1, &cpy);
+	res = vkEndCommandBuffer(cmd_buf);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to end command buffer");
+
+	VkSubmitInfo si = {};
+	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	si.commandBufferCount = 1;
+	si.pCommandBuffers = &cmd_buf;
+
+	res = vkQueueSubmit(m_transfer_queue, 1, &si, VK_NULL_HANDLE);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to submit to queue");
+	vkQueueWaitIdle(m_transfer_queue);
+
+	vkFreeCommandBuffers(m_device, m_transfer_cmd_pool, 1, &cmd_buf);
+}
+
 void BaseApplication::create_vertex_buffer()
 {
 	const std::vector<Vertex> vertices = {
@@ -987,39 +1079,31 @@ void BaseApplication::create_vertex_buffer()
 		{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
 	};
 
-	VkBufferCreateInfo bi = {};
-	bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bi.size = sizeof(Vertex) * vertices.size();
-	bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-	bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	m_num_vertices = static_cast<uint32_t>(vertices.size());
 
-	auto res = vkCreateBuffer(m_device, &bi, nullptr, &m_vertex_buffer);
-	if (res !=VK_SUCCESS) throw std::runtime_error("failed to create vertex buffer");
-
-	VkMemoryRequirements mem_req;
-	vkGetBufferMemoryRequirements(m_device, m_vertex_buffer, &mem_req);
-	VkMemoryAllocateInfo ai = {};
-	ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	ai.allocationSize = mem_req.size;
-	ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits,
-										  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-										  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-	res = vkAllocateMemory(m_device, &ai, nullptr, &m_memory);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
-
-	vkBindBufferMemory(m_device, m_vertex_buffer, m_memory, 0);
+	auto bufsize = sizeof(Vertex) * vertices.size();
+	
+	VkBuffer staging_buffer;
+	VkDeviceMemory staging_memory;
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+				  staging_buffer, staging_memory);
 	
 	void *data;
-	res = vkMapMemory(m_device, m_memory, 0, bi.size, 0, &data);
+	auto res = vkMapMemory(m_device, staging_memory, 0, bufsize, 0, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
-	std::memcpy(data, vertices.data(), bi.size);
-	vkUnmapMemory(m_device, m_memory);
+	std::memcpy(data, vertices.data(), bufsize);
+	vkUnmapMemory(m_device, staging_memory);
 
-	m_num_vertices = vertices.size();
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_memory);
+	copy_buffer(staging_buffer, m_vertex_buffer, bufsize);
+
+	vkDestroyBuffer(m_device, staging_buffer, nullptr);
+	vkFreeMemory(m_device, staging_memory, nullptr);
 }
 
-void BaseApplication::create_command_pool()
+void BaseApplication::create_command_pools()
 {
 	auto indices = find_queue_families(m_gpu);
 	VkCommandPoolCreateInfo pci = {};
@@ -1028,6 +1112,12 @@ void BaseApplication::create_command_pool()
 	pci.flags = 0; // optional
 
 	auto res = vkCreateCommandPool(m_device, &pci, nullptr, &m_cmd_pool);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create command pool");
+	}
+
+	pci.queueFamilyIndex = indices.transfer_family.value();
+	res = vkCreateCommandPool(m_device, &pci, nullptr, &m_transfer_cmd_pool);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to create command pool");
 	}
