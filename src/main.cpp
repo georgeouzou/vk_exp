@@ -9,11 +9,14 @@
 #include <algorithm>
 #include <fstream>
 #include <array>
+#include <chrono>
 
 #define GLFW_INCLUDE_VULKAN
 #define NOMINMAX
 #include <GLFW/glfw3.h>
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 
@@ -68,6 +71,13 @@ struct Vertex
 	}
 };
 
+struct CameraMatrices
+{
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 proj;
+};
+
 class BaseApplication
 {
 public:
@@ -106,6 +116,7 @@ private:
 	void create_image_views();
 
 	void create_render_pass();
+	void create_descriptor_set_layout();
 	void create_graphics_pipeline();
 	VkShaderModule create_shader_module(const std::vector<char> &code) const;
 	void create_framebuffers();
@@ -119,12 +130,17 @@ private:
 	
 	void create_vertex_buffer();
 	void create_index_buffer();
+	void create_uniform_buffers();
+
+	void create_descriptor_pool();
+	void create_descriptor_sets();
 
 	void create_command_pools();
 	void create_command_buffers();
 	
 	void create_sync_objects();
 
+	void update_uniform_buffer(uint32_t idx);
 	void draw_frame();
 
 	void cleanup_swapchain();
@@ -161,6 +177,7 @@ private:
 	std::vector<VkFramebuffer> m_swapchain_fbs;
 
 	VkRenderPass m_render_pass{ VK_NULL_HANDLE };
+	VkDescriptorSetLayout m_descriptor_set_layout{ VK_NULL_HANDLE };
 	VkPipelineLayout m_pipeline_layout{ VK_NULL_HANDLE };
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
 
@@ -170,6 +187,12 @@ private:
 	VkDeviceMemory m_index_buffer_memory;
 	uint32_t m_num_vertices;
 	uint32_t m_num_indices;
+
+	std::vector<VkBuffer> m_uni_buffers;
+	std::vector<VkDeviceMemory> m_uni_buffer_memory;
+
+	VkDescriptorPool m_desc_pool{ VK_NULL_HANDLE };
+	std::vector<VkDescriptorSet> m_desc_sets;
 
 	VkCommandPool m_cmd_pool{ VK_NULL_HANDLE };
 	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
@@ -276,6 +299,7 @@ void BaseApplication::init_vulkan()
 	create_image_views();
 
 	create_render_pass();
+	create_descriptor_set_layout();
 	create_graphics_pipeline();
 	create_framebuffers();
 
@@ -283,9 +307,40 @@ void BaseApplication::init_vulkan()
 
 	create_vertex_buffer();
 	create_index_buffer();
+	create_uniform_buffers();
+
+	create_descriptor_pool();
+	create_descriptor_sets();
+
 	create_command_buffers();
 
 	create_sync_objects();
+}
+
+void BaseApplication::recreate_swapchain()
+{
+	int width = 0, height = 0;
+	// we need to wait for the app to be in the foreground after minimizing
+	while (width == 0 || height == 0) {
+		glfwGetFramebufferSize(m_window, &width, &height);
+		glfwWaitEvents();
+	}
+	vkDeviceWaitIdle(m_device);
+
+	cleanup_swapchain();
+
+	create_swapchain();
+	create_image_views();
+	create_render_pass();
+	create_descriptor_set_layout();
+	create_graphics_pipeline();
+	create_framebuffers();
+	create_uniform_buffers();
+
+	create_descriptor_pool();
+	create_descriptor_sets();
+
+	create_command_buffers();
 }
 
 void BaseApplication::main_loop()
@@ -299,6 +354,16 @@ void BaseApplication::main_loop()
 
 void BaseApplication::cleanup_swapchain()
 {
+	for (auto b : m_uni_buffers) {
+		vkDestroyBuffer(m_device, b, nullptr);	
+	}
+	for (auto m : m_uni_buffer_memory) {
+		vkFreeMemory(m_device, m, nullptr);
+	}
+
+	// no need to free desc sets because we destroy the pool
+	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
+
 	vkFreeCommandBuffers(m_device, m_cmd_pool,
 						 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
 	for (auto fb : m_swapchain_fbs) {
@@ -306,6 +371,7 @@ void BaseApplication::cleanup_swapchain()
 	}
 
 	if (m_graphics_pipeline) vkDestroyPipeline(m_device, m_graphics_pipeline, nullptr);
+	if (m_descriptor_set_layout) vkDestroyDescriptorSetLayout(m_device, m_descriptor_set_layout, nullptr);
 	if (m_pipeline_layout) vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
 	if (m_render_pass) vkDestroyRenderPass(m_device, m_render_pass, nullptr);
 	for (auto img_view : m_swapchain_img_views) {
@@ -799,6 +865,23 @@ void BaseApplication::create_render_pass()
 	}
 }
 
+void BaseApplication::create_descriptor_set_layout()
+{
+	VkDescriptorSetLayoutBinding lb = {};
+	lb.binding = 0;
+	lb.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	lb.descriptorCount = 1;
+	lb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	lb.pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutCreateInfo li = {};
+	li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	li.bindingCount = 1;
+	li.pBindings = &lb;
+	auto res = vkCreateDescriptorSetLayout(m_device, &li, nullptr, &m_descriptor_set_layout);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor set layout");
+}
+
 void BaseApplication::create_graphics_pipeline()
 {
 	// 1. Shader modules
@@ -868,7 +951,7 @@ void BaseApplication::create_graphics_pipeline()
 	rci.polygonMode = VK_POLYGON_MODE_FILL; // other requires GPU feature
 	rci.lineWidth = 1.0f; // other requires GPU feature
 	rci.cullMode = VK_CULL_MODE_BACK_BIT;
-	rci.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	rci.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rci.depthBiasEnable = VK_FALSE; // polygon offset
 	rci.depthBiasConstantFactor = 0.0f; // optional
 	rci.depthBiasClamp = 0.0f; // optional;
@@ -913,8 +996,8 @@ void BaseApplication::create_graphics_pipeline()
 	// 10. Pipeline Layout
 	VkPipelineLayoutCreateInfo plci = {};
 	plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	plci.setLayoutCount = 0;
-	plci.pSetLayouts = nullptr;
+	plci.setLayoutCount = 1;
+	plci.pSetLayouts = &m_descriptor_set_layout;
 	plci.pushConstantRangeCount = 0;
 	plci.pPushConstantRanges = nullptr;
 
@@ -1137,6 +1220,71 @@ void BaseApplication::create_index_buffer()
 	vkFreeMemory(m_device, staging_mem, nullptr);
 }
 
+void BaseApplication::create_uniform_buffers()
+{
+	VkDeviceSize bufsize = sizeof(CameraMatrices);
+	m_uni_buffers.resize(m_swapchain_images.size());
+	m_uni_buffer_memory.resize(m_swapchain_images.size());
+
+	for (size_t i = 0; i < m_swapchain_images.size(); ++i) {
+		create_buffer(bufsize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					  m_uni_buffers[i], m_uni_buffer_memory[i]);
+	}
+}
+
+void BaseApplication::create_descriptor_pool()
+{
+	VkDescriptorPoolSize ps = {};
+	ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	ps.descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
+
+	VkDescriptorPoolCreateInfo pi = {};
+	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	pi.poolSizeCount = 1;
+	pi.pPoolSizes = &ps;
+	pi.maxSets = static_cast<uint32_t>(m_swapchain_images.size());
+
+	auto res = vkCreateDescriptorPool(m_device, &pi, nullptr, &m_desc_pool);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor pool");
+}
+
+void BaseApplication::create_descriptor_sets()
+{
+	std::vector<VkDescriptorSetLayout> layouts(m_swapchain_images.size(), m_descriptor_set_layout);
+	
+	VkDescriptorSetAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	ai.descriptorPool = m_desc_pool;
+	ai.descriptorSetCount = uint32_t(m_swapchain_images.size());
+	ai.pSetLayouts = layouts.data();
+
+	m_desc_sets.resize(m_swapchain_images.size());
+	auto res = vkAllocateDescriptorSets(m_device, &ai, m_desc_sets.data());
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate descriptor sets");
+
+	for (size_t i = 0; i < m_desc_sets.size(); ++i) {
+		VkDescriptorBufferInfo bi = {};
+		bi.buffer = m_uni_buffers[i];
+		bi.offset = 0;
+		bi.range = sizeof(CameraMatrices);
+
+		VkWriteDescriptorSet dw = {};
+		dw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw.dstSet = m_desc_sets[i];
+		dw.dstBinding = 0;
+		dw.dstArrayElement = 0;
+		dw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		dw.descriptorCount = 1;
+		dw.pBufferInfo = &bi;
+		dw.pImageInfo = nullptr;
+		dw.pTexelBufferView = nullptr;
+
+		vkUpdateDescriptorSets(m_device, 1, &dw, 0, nullptr);
+	}
+
+}
+
 void BaseApplication::create_command_pools()
 {
 	auto indices = find_queue_families(m_gpu);
@@ -1200,7 +1348,8 @@ void BaseApplication::create_command_buffers()
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(m_cmd_buffers[i], 0, 1, buffers, offsets);
 		vkCmdBindIndexBuffer(m_cmd_buffers[i], m_index_buffer, 0, VK_INDEX_TYPE_UINT16);
-
+		vkCmdBindDescriptorSets(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout,
+								0, 1, &m_desc_sets[i], 0, nullptr);
 		vkCmdDrawIndexed(m_cmd_buffers[i], m_num_indices, 1, 0 , 0, 0);
 
 		vkCmdEndRenderPass(m_cmd_buffers[i]);
@@ -1244,6 +1393,25 @@ void BaseApplication::create_sync_objects()
 		throw std::runtime_error("failed to create fences");
 }
 
+void BaseApplication::update_uniform_buffer(uint32_t idx)
+{
+	static auto start_time = std::chrono::high_resolution_clock::now();
+	auto curr_time = std::chrono::high_resolution_clock::now();
+	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
+
+	CameraMatrices ubo = {};
+	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
+	ubo.proj[1][1] *= -1;
+
+	void *data;
+	auto res = vkMapMemory(m_device, m_uni_buffer_memory[idx], 0, sizeof(CameraMatrices), 0, &data);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to map uniform buffer memory");
+	std::memcpy(data, &ubo, sizeof(CameraMatrices));
+	vkUnmapMemory(m_device, m_uni_buffer_memory[idx]);
+}
+
 void BaseApplication::draw_frame()
 {
 	vkWaitForFences(m_device, 1, &m_fen_flight[m_current_frame_idx], 
@@ -1260,6 +1428,8 @@ void BaseApplication::draw_frame()
 	} else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("failed to acquire swapchain image");
 	}
+
+	update_uniform_buffer(img_idx);
 
 	VkSubmitInfo si = {};
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1302,25 +1472,7 @@ void BaseApplication::draw_frame()
 	m_current_frame_idx = (m_current_frame_idx + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void BaseApplication::recreate_swapchain()
-{
-	int width = 0, height = 0;
-	// we need to wait for the app to be in the foreground after minimizing
-	while (width == 0 || height == 0) {
-		glfwGetFramebufferSize(m_window, &width, &height);
-		glfwWaitEvents();
-	}
-	vkDeviceWaitIdle(m_device);
 
-	cleanup_swapchain();
-
-	create_swapchain();
-	create_image_views();
-	create_render_pass();
-	create_graphics_pipeline();
-	create_framebuffers();
-	create_command_buffers();
-}
 
 int main()
 {
