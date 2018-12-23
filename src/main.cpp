@@ -118,7 +118,7 @@ private:
 	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 	
 	void create_vertex_buffer();
-	
+	void create_index_buffer();
 
 	void create_command_pools();
 	void create_command_buffers();
@@ -165,8 +165,11 @@ private:
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
 
 	VkBuffer m_vertex_buffer;
-	VkDeviceMemory m_memory;
+	VkDeviceMemory m_vertex_buffer_memory;
+	VkBuffer m_index_buffer;
+	VkDeviceMemory m_index_buffer_memory;
 	uint32_t m_num_vertices;
+	uint32_t m_num_indices;
 
 	VkCommandPool m_cmd_pool{ VK_NULL_HANDLE };
 	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
@@ -279,6 +282,7 @@ void BaseApplication::init_vulkan()
 	create_command_pools();
 
 	create_vertex_buffer();
+	create_index_buffer();
 	create_command_buffers();
 
 	create_sync_objects();
@@ -314,8 +318,10 @@ void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
 
+	vkDestroyBuffer(m_device, m_index_buffer, nullptr);
+	vkFreeMemory(m_device, m_index_buffer_memory, nullptr);
 	vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
-	vkFreeMemory(m_device, m_memory, nullptr);
+	vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 		vkDestroyFence(m_device, m_fen_flight[i], nullptr);
@@ -1074,9 +1080,10 @@ void BaseApplication::copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size)
 void BaseApplication::create_vertex_buffer()
 {
 	const std::vector<Vertex> vertices = {
-		{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-		{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-		{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+		{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+		{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+		{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+		{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
 	};
 
 	m_num_vertices = static_cast<uint32_t>(vertices.size());
@@ -1096,11 +1103,38 @@ void BaseApplication::create_vertex_buffer()
 	vkUnmapMemory(m_device, staging_memory);
 
 	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_memory);
+				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_vertex_buffer_memory);
 	copy_buffer(staging_buffer, m_vertex_buffer, bufsize);
 
 	vkDestroyBuffer(m_device, staging_buffer, nullptr);
 	vkFreeMemory(m_device, staging_memory, nullptr);
+}
+
+void BaseApplication::create_index_buffer()
+{
+	const std::vector<uint16_t> indices = {
+		0, 1, 2, 2, 3, 0
+	};
+	m_num_indices = uint32_t(indices.size());
+	VkDeviceSize bufsize = sizeof(uint16_t) * indices.size();
+	VkBuffer staging_buf;
+	VkDeviceMemory staging_mem;
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+				  staging_buf, staging_mem);
+
+	void *data;
+	auto res = vkMapMemory(m_device, staging_mem, 0, bufsize, 0, &data);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
+	std::memcpy(data, indices.data(), bufsize);
+	vkUnmapMemory(m_device, staging_mem);
+
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_index_buffer, m_index_buffer_memory);
+	copy_buffer(staging_buf, m_index_buffer, bufsize);
+
+	vkDestroyBuffer(m_device, staging_buf, nullptr);
+	vkFreeMemory(m_device, staging_mem, nullptr);
 }
 
 void BaseApplication::create_command_pools()
@@ -1159,13 +1193,15 @@ void BaseApplication::create_command_buffers()
 		rpbi.pClearValues = &clear_color;
 
 		vkCmdBeginRenderPass(m_cmd_buffers[i], &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+		
 		vkCmdBindPipeline(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 		
 		VkBuffer buffers[] = { m_vertex_buffer };
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(m_cmd_buffers[i], 0, 1, buffers, offsets);
+		vkCmdBindIndexBuffer(m_cmd_buffers[i], m_index_buffer, 0, VK_INDEX_TYPE_UINT16);
 
-		vkCmdDraw(m_cmd_buffers[i], m_num_vertices, 1, 0, 0);
+		vkCmdDrawIndexed(m_cmd_buffers[i], m_num_indices, 1, 0 , 0, 0);
 
 		vkCmdEndRenderPass(m_cmd_buffers[i]);
 
