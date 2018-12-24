@@ -11,12 +11,16 @@
 #include <array>
 #include <chrono>
 
-#define GLFW_INCLUDE_VULKAN
-#define NOMINMAX
-#include <GLFW/glfw3.h>
 #define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 
@@ -720,7 +724,7 @@ VkExtent2D BaseApplication::choose_swap_extent(const VkSurfaceCapabilitiesKHR & 
 	} else {
 		int width, height;
 		glfwGetFramebufferSize(m_window, &width, &height);
-		VkExtent2D actual = { width, height };
+		VkExtent2D actual = { uint32_t(width), uint32_t(height) };
 		
 		uint32_t min_width = capabilities.minImageExtent.width;
 		uint32_t max_width = capabilities.maxImageExtent.width;

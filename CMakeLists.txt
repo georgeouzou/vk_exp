@@ -7,7 +7,10 @@ project(${app})
 set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 
-set(src src/main.cpp)
+set(src 
+	src/main.cpp 
+	src/stb_image.c
+)
 
 add_executable(${app} ${src})
 set_property(TARGET ${app} PROPERTY CXX_STANDARD 17)
