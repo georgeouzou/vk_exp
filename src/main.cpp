@@ -10,11 +10,14 @@
 #include <fstream>
 #include <array>
 #include <chrono>
+#include <unordered_map>
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/hash.hpp>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -24,6 +27,7 @@
 #include "stb_image.h"
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
+#define ENABLE_VALIDATION_LAYERS
 
 struct QueueFamilyIndices
 {
@@ -50,6 +54,11 @@ struct Vertex
 	glm::vec3 pos;
 	glm::vec3 color;
 	glm::vec2 tex_coord;
+
+	bool operator == (const Vertex &other) const
+	{
+		return pos == other.pos && color == other.color && tex_coord == other.tex_coord;
+	}
 
 	static VkVertexInputBindingDescription get_binding_description()
 	{
@@ -80,6 +89,21 @@ struct Vertex
 		return ad;
 	}
 };
+
+// implement has specialization for vertex
+namespace std
+{
+	template<> struct hash<Vertex>
+	{
+		size_t operator()(Vertex const& vertex) const
+		{
+			return ((hash<glm::vec3>()(vertex.pos) ^
+					(hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+					(hash<glm::vec2>()(vertex.tex_coord) << 1);
+		}
+	};
+}
+
 
 struct CameraMatrices
 {
@@ -321,7 +345,7 @@ void BaseApplication::run()
 BaseApplication::BaseApplication()
 {
 	m_validation_layers.push_back("VK_LAYER_LUNARG_standard_validation");
-#if defined(NDEBUG)
+#if !defined(ENABLE_VALIDATION_LAYERS)
 	m_enable_validation_layers = false;
 #else 
 	m_enable_validation_layers = true;
@@ -1404,6 +1428,8 @@ void BaseApplication::load_model()
 		throw std::runtime_error(warn + err);
 	}
 
+	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
+
 	for (const auto &shape : shapes) {
 		for (const auto &index : shape.mesh.indices) {
 			Vertex vertex = {};
@@ -1417,9 +1443,22 @@ void BaseApplication::load_model()
 				1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
 			};
 			vertex.color = { 1.0f, 1.0f, 1.0f };
+#if 1
+			if (unique_vtx.count(vertex) == 0) {
+				unique_vtx[vertex] = uint32_t(m_model_vertices.size());
+				m_model_vertices.push_back(vertex);
+			}
+
+			m_model_indices.push_back(unique_vtx[vertex]);
+#else 
+			m_model_indices.push_back(m_model_vertices.size());
 			m_model_vertices.push_back(vertex);
-			m_model_indices.push_back((uint32_t)m_model_indices.size());
+			
+#endif
 		}
+		fprintf(stdout, "Loaded model: num vertices %u, num indices %u\n", 
+				m_model_vertices.size(),
+				m_model_indices.size());
 	}
 }
 
