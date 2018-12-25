@@ -690,7 +690,7 @@ void BaseApplication::create_logical_device()
 	}
 
 	VkPhysicalDeviceFeatures device_features = {};
-	device_features.samplerAnisotropy = VK_FALSE;
+	device_features.samplerAnisotropy = VK_TRUE;
 
 	VkDeviceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1455,7 +1455,7 @@ void BaseApplication::create_texture_sampler()
 	si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	si.maxAnisotropy = VK_TRUE;
+	si.anisotropyEnable = VK_TRUE;
 	si.maxAnisotropy = 16;
 	si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 	si.unnormalizedCoordinates = VK_FALSE;
