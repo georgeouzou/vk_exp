@@ -50,6 +50,7 @@ struct Vertex
 {
 	glm::vec2 pos;
 	glm::vec3 color;
+	glm::vec2 tex_coord;
 
 	static VkVertexInputBindingDescription get_binding_description()
 	{
@@ -60,10 +61,10 @@ struct Vertex
 		return bd;
 	}
 
-	static std::array<VkVertexInputAttributeDescription, 2>
+	static std::array<VkVertexInputAttributeDescription, 3>
 		get_attribute_descriptions()
 	{
-		std::array<VkVertexInputAttributeDescription, 2> ad;
+		std::array<VkVertexInputAttributeDescription, 3> ad;
 		ad[0].binding = 0;
 		ad[0].location = 0;
 		ad[0].format = VK_FORMAT_R32G32_SFLOAT;
@@ -72,6 +73,10 @@ struct Vertex
 		ad[1].location = 1;
 		ad[1].format = VK_FORMAT_R32G32B32_SFLOAT;
 		ad[1].offset = offsetof(Vertex, color);
+		ad[2].binding = 0;
+		ad[2].location = 2;
+		ad[2].format = VK_FORMAT_R32G32_SFLOAT;
+		ad[2].offset = offsetof(Vertex, tex_coord);
 
 		return ad;
 	}
@@ -923,10 +928,21 @@ void BaseApplication::create_descriptor_set_layout()
 	lb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	lb.pImmutableSamplers = nullptr;
 
+	VkDescriptorSetLayoutBinding sb = {};
+	sb.binding = 1;
+	sb.descriptorCount = 1;
+	sb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	sb.pImmutableSamplers = nullptr;
+	sb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
+		lb, sb
+	};
+
 	VkDescriptorSetLayoutCreateInfo li = {};
 	li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	li.bindingCount = 1;
-	li.pBindings = &lb;
+	li.bindingCount = uint32_t(bindings.size());
+	li.pBindings = bindings.data();
 	auto res = vkCreateDescriptorSetLayout(m_device, &li, nullptr, &m_descriptor_set_layout);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor set layout");
 }
@@ -1316,10 +1332,10 @@ void BaseApplication::copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_
 void BaseApplication::create_vertex_buffer()
 {
 	const std::vector<Vertex> vertices = {
-		{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-		{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-		{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-		{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+		{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+		{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+		{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+		{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
 	};
 
 	m_num_vertices = static_cast<uint32_t>(vertices.size());
@@ -1456,14 +1472,16 @@ void BaseApplication::create_texture_sampler()
 
 void BaseApplication::create_descriptor_pool()
 {
-	VkDescriptorPoolSize ps = {};
-	ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	ps.descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
+	std::array<VkDescriptorPoolSize, 2> ps = {};
+	ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	ps[0].descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
+	ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	ps[1].descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
 
 	VkDescriptorPoolCreateInfo pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	pi.poolSizeCount = 1;
-	pi.pPoolSizes = &ps;
+	pi.poolSizeCount = uint32_t(ps.size());
+	pi.pPoolSizes = ps.data();
 	pi.maxSets = static_cast<uint32_t>(m_swapchain_images.size());
 
 	auto res = vkCreateDescriptorPool(m_device, &pi, nullptr, &m_desc_pool);
@@ -1489,19 +1507,29 @@ void BaseApplication::create_descriptor_sets()
 		bi.buffer = m_uni_buffers[i];
 		bi.offset = 0;
 		bi.range = sizeof(CameraMatrices);
+		VkDescriptorImageInfo ii = {};
+		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		ii.imageView = m_texture_img_view;
+		ii.sampler = m_texture_sampler;
 
-		VkWriteDescriptorSet dw = {};
-		dw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		dw.dstSet = m_desc_sets[i];
-		dw.dstBinding = 0;
-		dw.dstArrayElement = 0;
-		dw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		dw.descriptorCount = 1;
-		dw.pBufferInfo = &bi;
-		dw.pImageInfo = nullptr;
-		dw.pTexelBufferView = nullptr;
+		std::array<VkWriteDescriptorSet, 2> dw = {};
+		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[0].dstSet = m_desc_sets[i];
+		dw[0].dstBinding = 0;
+		dw[0].dstArrayElement = 0;
+		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		dw[0].descriptorCount = 1;
+		dw[0].pBufferInfo = &bi;
 
-		vkUpdateDescriptorSets(m_device, 1, &dw, 0, nullptr);
+		dw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[1].dstSet = m_desc_sets[i];
+		dw[1].dstBinding = 1;
+		dw[1].dstArrayElement = 0;
+		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		dw[1].descriptorCount = 1;
+		dw[1].pImageInfo = &ii;
+		
+		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
 
 }
