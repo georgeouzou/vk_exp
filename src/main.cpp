@@ -21,6 +21,8 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include "stb_image.h"
+
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 
@@ -59,7 +61,7 @@ struct Vertex
 	}
 
 	static std::array<VkVertexInputAttributeDescription, 2>
-		get_attribture_descriptions()
+		get_attribute_descriptions()
 	{
 		std::array<VkVertexInputAttributeDescription, 2> ad;
 		ad[0].binding = 0;
@@ -127,14 +129,27 @@ private:
 	
 	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
 	
-
 	void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
 					   VkMemoryPropertyFlags props, VkBuffer &buffer, VkDeviceMemory &memory);
 	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 	
+	void create_image(uint32_t width, uint32_t height, VkFormat format,
+					  VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags props,
+					  VkImage &img, VkDeviceMemory &img_memory);
+	
+	VkCommandBuffer begin_single_time_commands(VkQueue queue, VkCommandPool cmd_pool);
+	void end_single_time_commands(VkQueue queue, VkCommandPool cmd_pool, VkCommandBuffer cmd_buffer);
+
+	void transition_image_layout(VkImage img, VkFormat format, VkImageLayout old_layout, VkImageLayout new_layout);
+	void copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_t width, uint32_t height);
+
 	void create_vertex_buffer();
 	void create_index_buffer();
 	void create_uniform_buffers();
+
+	void create_texture_image();
+	void create_texture_image_view();
+	void create_texture_sampler();
 
 	void create_descriptor_pool();
 	void create_descriptor_sets();
@@ -185,20 +200,25 @@ private:
 	VkPipelineLayout m_pipeline_layout{ VK_NULL_HANDLE };
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
 
-	VkBuffer m_vertex_buffer;
-	VkDeviceMemory m_vertex_buffer_memory;
-	VkBuffer m_index_buffer;
-	VkDeviceMemory m_index_buffer_memory;
+	VkBuffer m_vertex_buffer{ VK_NULL_HANDLE };
+	VkDeviceMemory m_vertex_buffer_memory{ VK_NULL_HANDLE };
+	VkBuffer m_index_buffer{ VK_NULL_HANDLE };
+	VkDeviceMemory m_index_buffer_memory{ VK_NULL_HANDLE };
 	uint32_t m_num_vertices;
 	uint32_t m_num_indices;
 
 	std::vector<VkBuffer> m_uni_buffers;
 	std::vector<VkDeviceMemory> m_uni_buffer_memory;
 
+	VkImage m_texture_img{ VK_NULL_HANDLE };
+	VkDeviceMemory m_texture_img_memory{ VK_NULL_HANDLE };
+	VkImageView m_texture_img_view{ VK_NULL_HANDLE };
+	VkSampler m_texture_sampler{ VK_NULL_HANDLE };
+
 	VkDescriptorPool m_desc_pool{ VK_NULL_HANDLE };
 	std::vector<VkDescriptorSet> m_desc_sets;
 
-	VkCommandPool m_cmd_pool{ VK_NULL_HANDLE };
+	VkCommandPool m_graphics_cmd_pool{ VK_NULL_HANDLE };
 	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
 	std::vector<VkCommandBuffer> m_cmd_buffers;
 	
@@ -233,6 +253,33 @@ static void framebuffer_resize_callback(GLFWwindow *window, int width, int heigh
 	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
 	app->set_window_resized();
 }
+
+namespace vk_helpers
+{
+static VkImageView create_image_view_2d(const VkDevice device, const VkImage img, VkFormat format)
+{
+	VkImageViewCreateInfo vi = {};
+	vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	vi.image = img;
+	vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	vi.format = format;
+	vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	vi.subresourceRange.baseMipLevel = 0;
+	vi.subresourceRange.levelCount = 1;
+	vi.subresourceRange.baseArrayLayer = 0;
+	vi.subresourceRange.layerCount = 1;
+
+	VkImageView view = VK_NULL_HANDLE;
+
+	auto res = vkCreateImageView(device, &vi, nullptr, &view);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create texture image view");
+	}
+	return view;
+}
+
+};
+
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
@@ -312,6 +359,9 @@ void BaseApplication::init_vulkan()
 	create_vertex_buffer();
 	create_index_buffer();
 	create_uniform_buffers();
+	create_texture_image();
+	create_texture_image_view();
+	create_texture_sampler();
 
 	create_descriptor_pool();
 	create_descriptor_sets();
@@ -368,7 +418,7 @@ void BaseApplication::cleanup_swapchain()
 	// no need to free desc sets because we destroy the pool
 	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
 
-	vkFreeCommandBuffers(m_device, m_cmd_pool,
+	vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
 						 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
 	for (auto fb : m_swapchain_fbs) {
 		vkDestroyFramebuffer(m_device, fb, nullptr);
@@ -388,10 +438,16 @@ void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
 
-	vkDestroyBuffer(m_device, m_index_buffer, nullptr);
-	vkFreeMemory(m_device, m_index_buffer_memory, nullptr);
-	vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
-	vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
+	if (m_device) {
+		vkDestroySampler(m_device, m_texture_sampler, nullptr);
+		vkDestroyImageView(m_device, m_texture_img_view, nullptr);
+		vkDestroyImage(m_device, m_texture_img, nullptr);
+		vkFreeMemory(m_device, m_texture_img_memory, nullptr);
+		vkDestroyBuffer(m_device, m_index_buffer, nullptr);
+		vkFreeMemory(m_device, m_index_buffer_memory, nullptr);
+		vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
+		vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
+	}
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 		vkDestroyFence(m_device, m_fen_flight[i], nullptr);
@@ -399,7 +455,7 @@ void BaseApplication::cleanup()
 		vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
 	}
 	if (m_transfer_cmd_pool) vkDestroyCommandPool(m_device, m_transfer_cmd_pool, nullptr);
-	if (m_cmd_pool) vkDestroyCommandPool(m_device, m_cmd_pool, nullptr);
+	if (m_graphics_cmd_pool) vkDestroyCommandPool(m_device, m_graphics_cmd_pool, nullptr);
 	if (m_device) vkDestroyDevice(m_device, nullptr);
 	if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
 
@@ -568,8 +624,10 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		swapchain_adequate = !chain_details.formats.empty() && 
 			!chain_details.present_modes.empty();
 	}
+
+	bool supported_features = features.samplerAnisotropy;
 	
-	return indices.is_complete() && extensions_supported && swapchain_adequate;
+	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
 
 QueueFamilyIndices BaseApplication::find_queue_families(VkPhysicalDevice gpu) const
@@ -627,6 +685,7 @@ void BaseApplication::create_logical_device()
 	}
 
 	VkPhysicalDeviceFeatures device_features = {};
+	device_features.samplerAnisotropy = VK_FALSE;
 
 	VkDeviceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -803,22 +862,8 @@ void BaseApplication::create_image_views()
 {
 	m_swapchain_img_views.resize(m_swapchain_images.size());
 	for (size_t i = 0; i < m_swapchain_images.size(); ++i) {
-		VkImageViewCreateInfo ci = {};
-		ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		ci.image = m_swapchain_images[i];
-		ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		ci.format = m_swapchain_img_format;
-		ci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-		ci.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-		ci.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-		ci.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-		ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		ci.subresourceRange.baseMipLevel = 0;
-		ci.subresourceRange.levelCount = 1;
-		ci.subresourceRange.baseArrayLayer = 0;
-		ci.subresourceRange.layerCount = 1;
-		auto res = vkCreateImageView(m_device, &ci, nullptr, &m_swapchain_img_views[i]);
-		if (res != VK_SUCCESS) { throw std::runtime_error("failed to create image views"); }
+		m_swapchain_img_views[i] = vk_helpers::create_image_view_2d(m_device, 
+										m_swapchain_images[i], m_swapchain_img_format);
 	}
 }
 
@@ -912,7 +957,7 @@ void BaseApplication::create_graphics_pipeline()
 
 	// 2. Vertex Input 
 	auto binding_desc = Vertex::get_binding_description();
-	auto attrib_desc = Vertex::get_attribture_descriptions();
+	auto attrib_desc = Vertex::get_attribute_descriptions();
 
 	VkPipelineVertexInputStateCreateInfo vici = {};
 	vici.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -1127,41 +1172,145 @@ void BaseApplication::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
 
 void BaseApplication::copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size)
 {
-	VkCommandBufferAllocateInfo ai = {};
-	ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	ai.commandPool = m_transfer_cmd_pool;
-	ai.commandBufferCount = 1;
-	VkCommandBuffer cmd_buf;
-	
-	auto res = vkAllocateCommandBuffers(m_device, &ai, &cmd_buf);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate command buffer");
-	
-	VkCommandBufferBeginInfo bi = {};
-	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	auto cmd_buf = begin_single_time_commands(m_transfer_queue, m_transfer_cmd_pool);
 
-	res = vkBeginCommandBuffer(cmd_buf, &bi);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to begin command buffer");
 	VkBufferCopy cpy = {};
 	cpy.srcOffset = 0;
 	cpy.dstOffset = 0;
 	cpy.size = size;
 	
 	vkCmdCopyBuffer(cmd_buf, src, dst, 1, &cpy);
-	res = vkEndCommandBuffer(cmd_buf);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to end command buffer");
+
+	end_single_time_commands(m_transfer_queue, m_transfer_cmd_pool, cmd_buf);
+}
+
+void BaseApplication::create_image(uint32_t width, uint32_t height, VkFormat format, 
+								   VkImageTiling tiling, VkImageUsageFlags usage, 
+								   VkMemoryPropertyFlags props, VkImage & img, VkDeviceMemory & img_memory)
+{
+	VkImageCreateInfo ii = {};
+	ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	ii.imageType = VK_IMAGE_TYPE_2D;
+	ii.extent = { width, height, 1 };
+	ii.mipLevels = 1;
+	ii.arrayLayers = 1;
+	ii.format = format;
+	ii.tiling = tiling;
+	ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	ii.usage = usage;
+	ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	ii.samples = VK_SAMPLE_COUNT_1_BIT;
+	ii.flags = 0;
+
+	auto res = vkCreateImage(m_device, &ii, nullptr, &img);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create image");
+
+	VkMemoryRequirements mem_req;
+	vkGetImageMemoryRequirements(m_device, img, &mem_req);
+	VkMemoryAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	ai.allocationSize = mem_req.size;
+	ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, props);
+
+	res = vkAllocateMemory(m_device, &ai, nullptr, &img_memory);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate memory");
+
+	vkBindImageMemory(m_device, img, img_memory, 0);
+}
+
+VkCommandBuffer BaseApplication::begin_single_time_commands(VkQueue queue, VkCommandPool cmd_pool)
+{
+	VkCommandBufferAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	ai.commandPool = cmd_pool;
+	ai.commandBufferCount = 1;
+
+	VkCommandBuffer cmd_buf;
+	auto res = vkAllocateCommandBuffers(m_device, &ai, &cmd_buf);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate command buffer");
+	VkCommandBufferBeginInfo bi = {};
+	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	res = vkBeginCommandBuffer(cmd_buf, &bi);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to begin command buffer recording");
+	return cmd_buf;
+}
+
+void BaseApplication::end_single_time_commands(VkQueue queue, VkCommandPool cmd_pool, VkCommandBuffer cmd_buffer)
+{
+	auto res = vkEndCommandBuffer(cmd_buffer);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to end command buffer recording");
 
 	VkSubmitInfo si = {};
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	si.commandBufferCount = 1;
-	si.pCommandBuffers = &cmd_buf;
+	si.pCommandBuffers = &cmd_buffer;
 
-	res = vkQueueSubmit(m_transfer_queue, 1, &si, VK_NULL_HANDLE);
+	res = vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to submit to queue");
-	vkQueueWaitIdle(m_transfer_queue);
+	vkQueueWaitIdle(queue);
 
-	vkFreeCommandBuffers(m_device, m_transfer_cmd_pool, 1, &cmd_buf);
+	vkFreeCommandBuffers(m_device, cmd_pool, 1, &cmd_buffer);
+}
+
+void BaseApplication::transition_image_layout(VkImage img, VkFormat format, VkImageLayout old_layout, VkImageLayout new_layout)
+{
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+
+	VkImageMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = old_layout;
+	barrier.newLayout = new_layout;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = img;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseMipLevel = 0;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = 1;
+
+	VkPipelineStageFlags src_stage;
+	VkPipelineStageFlags dst_stage;
+	if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED && new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	}  else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	} else {
+		throw std::runtime_error("unsupported texture layout transition");
+	}
+
+	vkCmdPipelineBarrier(cmd_buf, src_stage, dst_stage,
+						 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+}
+
+void BaseApplication::copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_t width, uint32_t height)
+{
+	VkCommandBuffer cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	
+	VkBufferImageCopy rg = {};
+	rg.bufferOffset = 0;
+	rg.bufferRowLength = 0; // tightly packed
+	rg.bufferImageHeight = 0; // tightly packed
+	rg.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	rg.imageSubresource.mipLevel = 0;
+	rg.imageSubresource.baseArrayLayer = 0;
+	rg.imageSubresource.layerCount = 1;
+	rg.imageOffset = { 0, 0, 0 };
+	rg.imageExtent = { width, height, 1 };
+	vkCmdCopyBufferToImage(cmd_buf, buffer, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
 void BaseApplication::create_vertex_buffer()
@@ -1237,6 +1386,74 @@ void BaseApplication::create_uniform_buffers()
 	}
 }
 
+void BaseApplication::create_texture_image()
+{
+	int tex_width, tex_height, tex_channels;
+	stbi_uc *pixels = stbi_load("textures/statue.jpg", 
+			&tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
+	if (!pixels) {
+		throw std::runtime_error("failed to load texture");
+	}
+	VkDeviceSize image_size = tex_width * tex_height * 4;
+
+	VkBuffer staging_buffer;
+	VkDeviceMemory staging_memory;
+	create_buffer(image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				  staging_buffer, staging_memory);
+
+	void *data;
+	auto res = vkMapMemory(m_device, staging_memory, 0, image_size, 0, &data);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to map buffer memory");
+	std::memcpy(data, pixels, size_t(image_size));
+	vkUnmapMemory(m_device, staging_memory);
+
+	stbi_image_free(pixels);
+
+	create_image(tex_width, tex_height, VK_FORMAT_R8G8B8A8_UNORM,
+				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_texture_img, m_texture_img_memory);
+
+	transition_image_layout(m_texture_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED,
+							VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	copy_buffer_to_image(staging_buffer, m_texture_img, tex_width, tex_height);
+	transition_image_layout(m_texture_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+
+	vkDestroyBuffer(m_device, staging_buffer, nullptr);
+	vkFreeMemory(m_device, staging_memory, nullptr);
+}
+
+void BaseApplication::create_texture_image_view()
+{
+	m_texture_img_view = vk_helpers::create_image_view_2d(m_device, m_texture_img, VK_FORMAT_R8G8B8A8_UNORM);
+}
+
+void BaseApplication::create_texture_sampler()
+{
+	VkSamplerCreateInfo si = {};
+	si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	si.magFilter = VK_FILTER_LINEAR;
+	si.minFilter = VK_FILTER_LINEAR;
+	si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	si.maxAnisotropy = VK_TRUE;
+	si.maxAnisotropy = 16;
+	si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	si.unnormalizedCoordinates = VK_FALSE;
+	si.compareEnable = VK_FALSE;
+	si.compareOp = VK_COMPARE_OP_ALWAYS;
+	si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	si.mipLodBias = 0.0f;
+	si.minLod = 0.0f;
+	si.maxLod = 0.0f;
+
+	auto res = vkCreateSampler(m_device, &si, nullptr, &m_texture_sampler);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create texture sampler");
+}
+
 void BaseApplication::create_descriptor_pool()
 {
 	VkDescriptorPoolSize ps = {};
@@ -1297,7 +1514,7 @@ void BaseApplication::create_command_pools()
 	pci.queueFamilyIndex = indices.graphics_family.value();
 	pci.flags = 0; // optional
 
-	auto res = vkCreateCommandPool(m_device, &pci, nullptr, &m_cmd_pool);
+	auto res = vkCreateCommandPool(m_device, &pci, nullptr, &m_graphics_cmd_pool);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to create command pool");
 	}
@@ -1317,7 +1534,7 @@ void BaseApplication::create_command_buffers()
 
 	VkCommandBufferAllocateInfo cbi = {};
 	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	cbi.commandPool = m_cmd_pool;
+	cbi.commandPool = m_graphics_cmd_pool;
 	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	cbi.commandBufferCount = (uint32_t)m_cmd_buffers.size();
 
@@ -1475,8 +1692,6 @@ void BaseApplication::draw_frame()
 	}
 	m_current_frame_idx = (m_current_frame_idx + 1) % MAX_FRAMES_IN_FLIGHT;
 }
-
-
 
 int main()
 {

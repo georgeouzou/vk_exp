@@ -6,6 +6,7 @@ project(${app})
 
 set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+set(TEXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/textures")
 
 set(src 
 	src/main.cpp 
@@ -77,9 +78,20 @@ add_custom_target(
 
 add_dependencies(${app} Shaders)
 
+# copy shaders to executable
+
 add_custom_command(TARGET ${app} POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/shaders/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
 		"${PROJECT_BINARY_DIR}/spirv_files"
 		"$<TARGET_FILE_DIR:${app}>/shaders"
+)
+
+# copy images to executable
+
+add_custom_command(TARGET ${app} POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/textures/"
+	COMMAND ${CMAKE_COMMAND} -E copy_directory 
+		${TEXTURE_DIR}
+		"$<TARGET_FILE_DIR:${app}>/textures"
 )
