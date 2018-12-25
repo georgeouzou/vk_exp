@@ -15,15 +15,13 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-
+#include <tiny_obj_loader.h>
 #include "stb_image.h"
-
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 
@@ -149,6 +147,8 @@ private:
 	void transition_image_layout(VkImage img, VkFormat format, VkImageLayout old_layout, VkImageLayout new_layout);
 	void copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_t width, uint32_t height);
 
+	void load_model();
+
 	void create_vertex_buffer();
 	void create_index_buffer();
 	void create_uniform_buffers();
@@ -214,12 +214,13 @@ private:
 	VkPipelineLayout m_pipeline_layout{ VK_NULL_HANDLE };
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
 
+	std::vector<Vertex> m_model_vertices;
+	std::vector<uint32_t> m_model_indices;
+
 	VkBuffer m_vertex_buffer{ VK_NULL_HANDLE };
 	VkDeviceMemory m_vertex_buffer_memory{ VK_NULL_HANDLE };
 	VkBuffer m_index_buffer{ VK_NULL_HANDLE };
 	VkDeviceMemory m_index_buffer_memory{ VK_NULL_HANDLE };
-	uint32_t m_num_vertices;
-	uint32_t m_num_indices;
 
 	std::vector<VkBuffer> m_uni_buffers;
 	std::vector<VkDeviceMemory> m_uni_buffer_memory;
@@ -374,6 +375,8 @@ void BaseApplication::init_vulkan()
 	create_descriptor_set_layout();
 	create_graphics_pipeline();
 	create_framebuffers();
+
+	load_model();
 
 	create_vertex_buffer();
 	create_index_buffer();
@@ -1391,24 +1394,38 @@ void BaseApplication::copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
+void BaseApplication::load_model()
+{
+	tinyobj::attrib_t attrib;
+	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::material_t> materials;
+	std::string warn, err;
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "textures/chalet.obj")) {
+		throw std::runtime_error(warn + err);
+	}
+
+	for (const auto &shape : shapes) {
+		for (const auto &index : shape.mesh.indices) {
+			Vertex vertex = {};
+			vertex.pos = {
+				attrib.vertices[3 * index.vertex_index + 0],
+				attrib.vertices[3 * index.vertex_index + 1],
+				attrib.vertices[3 * index.vertex_index + 2]
+			};
+			vertex.tex_coord = {
+				attrib.texcoords[2 * index.texcoord_index + 0],
+				1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+			};
+			vertex.color = { 1.0f, 1.0f, 1.0f };
+			m_model_vertices.push_back(vertex);
+			m_model_indices.push_back((uint32_t)m_model_indices.size());
+		}
+	}
+}
+
 void BaseApplication::create_vertex_buffer()
 {
-	const std::vector<Vertex> vertices = {
-		{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-		{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-		{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-		{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
-
-		{{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-		{{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-		{{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-		{{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
-	};
-
-
-	m_num_vertices = static_cast<uint32_t>(vertices.size());
-
-	auto bufsize = sizeof(Vertex) * vertices.size();
+	auto bufsize = sizeof(Vertex) * m_model_vertices.size();
 	
 	VkBuffer staging_buffer;
 	VkDeviceMemory staging_memory;
@@ -1419,7 +1436,7 @@ void BaseApplication::create_vertex_buffer()
 	void *data;
 	auto res = vkMapMemory(m_device, staging_memory, 0, bufsize, 0, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
-	std::memcpy(data, vertices.data(), bufsize);
+	std::memcpy(data, m_model_vertices.data(), bufsize);
 	vkUnmapMemory(m_device, staging_memory);
 
 	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -1432,12 +1449,8 @@ void BaseApplication::create_vertex_buffer()
 
 void BaseApplication::create_index_buffer()
 {
-	const std::vector<uint16_t> indices = {
-		0, 1, 2, 2, 3, 0,
-		4, 5, 6, 6, 7, 4
-	};
-	m_num_indices = uint32_t(indices.size());
-	VkDeviceSize bufsize = sizeof(uint16_t) * indices.size();
+	
+	VkDeviceSize bufsize = sizeof(uint32_t) * m_model_indices.size();
 	VkBuffer staging_buf;
 	VkDeviceMemory staging_mem;
 	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -1447,7 +1460,7 @@ void BaseApplication::create_index_buffer()
 	void *data;
 	auto res = vkMapMemory(m_device, staging_mem, 0, bufsize, 0, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
-	std::memcpy(data, indices.data(), bufsize);
+	std::memcpy(data, m_model_indices.data(), bufsize);
 	vkUnmapMemory(m_device, staging_mem);
 
 	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -1474,7 +1487,7 @@ void BaseApplication::create_uniform_buffers()
 void BaseApplication::create_texture_image()
 {
 	int tex_width, tex_height, tex_channels;
-	stbi_uc *pixels = stbi_load("textures/statue.jpg", 
+	stbi_uc *pixels = stbi_load("textures/chalet.jpg", 
 			&tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
 	if (!pixels) {
 		throw std::runtime_error("failed to load texture");
@@ -1709,10 +1722,10 @@ void BaseApplication::create_command_buffers()
 		VkBuffer buffers[] = { m_vertex_buffer };
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(m_cmd_buffers[i], 0, 1, buffers, offsets);
-		vkCmdBindIndexBuffer(m_cmd_buffers[i], m_index_buffer, 0, VK_INDEX_TYPE_UINT16);
+		vkCmdBindIndexBuffer(m_cmd_buffers[i], m_index_buffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdBindDescriptorSets(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout,
 								0, 1, &m_desc_sets[i], 0, nullptr);
-		vkCmdDrawIndexed(m_cmd_buffers[i], m_num_indices, 1, 0 , 0, 0);
+		vkCmdDrawIndexed(m_cmd_buffers[i], uint32_t(m_model_indices.size()), 1, 0 , 0, 0);
 
 		vkCmdEndRenderPass(m_cmd_buffers[i]);
 
@@ -1762,7 +1775,7 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
 
 	CameraMatrices ubo = {};
-	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1;

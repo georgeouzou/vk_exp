@@ -8,9 +8,12 @@ set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(TEXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/textures")
 
+
+
 set(src 
 	src/main.cpp 
 	src/stb_image.c
+	src/tiny_obj_loader.cpp
 )
 
 add_executable(${app} ${src})
@@ -31,6 +34,10 @@ target_compile_definitions(${app} PRIVATE "GLFW_INCLUDE_NONE")
 # glm
 set(GLM_DIR "${EXTERN_DIR}/glm")
 target_include_directories(${app} PRIVATE ${GLM_DIR})
+
+# tinyobjloader
+set(TINYOBJLOADER "${EXTERN_DIR}/tinyobjloader")
+target_include_directories(${app} PRIVATE ${TINYOBJLOADER})
 
 # vulkan
 
@@ -77,6 +84,17 @@ add_custom_target(
 )
 
 add_dependencies(${app} Shaders)
+
+# download resources
+if (NOT EXISTS "${TEXTURE_DIR}/chalet.obj")
+	MESSAGE(STATUS "Downloading model resources")
+	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.obj.zip "${TEXTURE_DIR}/chalet.obj.zip"  SHOW_PROGRESS)
+	execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${TEXTURE_DIR}/chalet.obj.zip WORKING_DIRECTORY ${TEXTURE_DIR})
+	file(REMOVE ${TEXTURE_DIR}/chalet.obj.zip)
+endif()
+if (NOT EXISTS "${TEXTURE_DIR}/chalet.jpg")
+	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.jpg "${TEXTURE_DIR}/chalet.jpg"  SHOW_PROGRESS)
+endif()
 
 # copy shaders to executable
 

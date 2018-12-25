@@ -4,3 +4,6 @@
 [submodule "extern/glm"]
 	path = extern/glm
 	url = https://github.com/g-truc/glm.git
+[submodule "extern/tinyobjloader"]
+	path = extern/tinyobjloader
+	url = https://github.com/syoyo/tinyobjloader.git

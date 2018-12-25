@@ -333,3 +333,7 @@ ASALocalRun/
 build*/
 
 
+# ignore downloadable stuff
+textures/
+CMakeSettings.json
+
