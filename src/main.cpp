@@ -992,8 +992,8 @@ void BaseApplication::create_descriptor_set_layout()
 void BaseApplication::create_graphics_pipeline()
 {
 	// 1. Shader modules
-	auto vert_code = read_file("shaders/simple.vert.spv");
-	auto frag_code = read_file("shaders/simple.frag.spv");
+	auto vert_code = read_file("resources/simple.vert.spv");
+	auto frag_code = read_file("resources/simple.frag.spv");
 	auto vert_module = create_shader_module(vert_code);
 	auto frag_module = create_shader_module(frag_code);
 
@@ -1400,7 +1400,7 @@ void BaseApplication::load_model()
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
 	std::string warn, err;
-	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "textures/chalet.obj")) {
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/chalet.obj")) {
 		throw std::runtime_error(warn + err);
 	}
 
@@ -1487,7 +1487,7 @@ void BaseApplication::create_uniform_buffers()
 void BaseApplication::create_texture_image()
 {
 	int tex_width, tex_height, tex_channels;
-	stbi_uc *pixels = stbi_load("textures/chalet.jpg", 
+	stbi_uc *pixels = stbi_load("resources/chalet.jpg", 
 			&tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
 	if (!pixels) {
 		throw std::runtime_error("failed to load texture");

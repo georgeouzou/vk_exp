@@ -6,9 +6,6 @@ project(${app})
 
 set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
-set(TEXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/textures")
-
-
 
 set(src 
 	src/main.cpp 
@@ -86,30 +83,34 @@ add_custom_target(
 add_dependencies(${app} Shaders)
 
 # download resources
-if (NOT EXISTS "${TEXTURE_DIR}/chalet.obj")
+
+set(DOWNLOADABLES "${PROJECT_BINARY_DIR}/downloadables/")
+file(MAKE_DIRECTORY ${DOWNLOADABLES})
+
+if (NOT EXISTS "${DOWNLOADABLES}/chalet.obj")
 	MESSAGE(STATUS "Downloading model resources")
-	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.obj.zip "${TEXTURE_DIR}/chalet.obj.zip"  SHOW_PROGRESS)
-	execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${TEXTURE_DIR}/chalet.obj.zip WORKING_DIRECTORY ${TEXTURE_DIR})
-	file(REMOVE ${TEXTURE_DIR}/chalet.obj.zip)
+	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.obj.zip "${DOWNLOADABLES}/chalet.obj.zip"  SHOW_PROGRESS)
+	execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${DOWNLOADABLES}/chalet.obj.zip WORKING_DIRECTORY ${DOWNLOADABLES})
+	file(REMOVE ${DOWNLOADABLES}/chalet.obj.zip)
 endif()
-if (NOT EXISTS "${TEXTURE_DIR}/chalet.jpg")
-	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.jpg "${TEXTURE_DIR}/chalet.jpg"  SHOW_PROGRESS)
+if (NOT EXISTS "${DOWNLOADABLES}/chalet.jpg")
+	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.jpg "${DOWNLOADABLES}/chalet.jpg"  SHOW_PROGRESS)
 endif()
 
 # copy shaders to executable
 
 add_custom_command(TARGET ${app} POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/shaders/"
+	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
 		"${PROJECT_BINARY_DIR}/spirv_files"
-		"$<TARGET_FILE_DIR:${app}>/shaders"
+		"$<TARGET_FILE_DIR:${app}>/resources"
 )
 
 # copy images to executable
 
 add_custom_command(TARGET ${app} POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/textures/"
+	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory 
-		${TEXTURE_DIR}
-		"$<TARGET_FILE_DIR:${app}>/textures"
+		${DOWNLOADABLES}
+		"$<TARGET_FILE_DIR:${app}>/resources"
 )
