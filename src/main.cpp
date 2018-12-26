@@ -45,6 +45,8 @@ static PFN_vkGetAccelerationStructureMemoryRequirementsNV evkGetAccelerationStru
 static PFN_vkBindAccelerationStructureMemoryNV evkBindAccelerationStructureMemoryNV;
 static PFN_vkCmdBuildAccelerationStructureNV evkCmdBuildAccelerationStructureNV;
 static PFN_vkGetAccelerationStructureHandleNV evkGetAccelerationStructureHandleNV;
+static PFN_vkCreateRayTracingPipelinesNV evkCreateRayTracingPipelinesNV;
+
 
 struct QueueFamilyIndices
 {
@@ -140,7 +142,7 @@ struct ASBuffers
 
 	void destroy(VkDevice device)
 	{
-		evkDestroyAccelerationStructureNV(device, structure, nullptr);
+		if (structure) evkDestroyAccelerationStructureNV(device, structure, nullptr);
 		vkDestroyBuffer(device, scratch_buffer, nullptr);
 		vkDestroyBuffer(device, instances, nullptr);
 		vkFreeMemory(device, memory, nullptr);
@@ -192,8 +194,9 @@ private:
 	void create_descriptor_set_layout();
 	void create_graphics_pipeline();
 	VkShaderModule create_shader_module(const std::vector<char> &code) const;
+
 	void create_framebuffers();
-	
+
 	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
 	
 	void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
@@ -218,6 +221,8 @@ private:
 
 	void create_bottom_acceleration_structure();
 	void create_top_acceleration_structure();
+	void create_raytracing_pipeline_layout();
+	void create_raytracing_pipeline();
 
 	void create_texture_image();
 	void create_texture_image_view();
@@ -279,6 +284,10 @@ private:
 	VkDescriptorSetLayout m_descriptor_set_layout{ VK_NULL_HANDLE };
 	VkPipelineLayout m_pipeline_layout{ VK_NULL_HANDLE };
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
+	
+	VkDescriptorSetLayout m_rt_descriptor_set_layout{ VK_NULL_HANDLE };
+	VkPipelineLayout m_rt_pipeline_layout {VK_NULL_HANDLE};
+	VkPipeline m_rt_pipeline{ VK_NULL_HANDLE };
 
 	std::vector<Vertex> m_model_vertices;
 	std::vector<uint32_t> m_model_indices;
@@ -458,6 +467,10 @@ void BaseApplication::init_vulkan()
 	create_descriptor_set_layout();
 	create_graphics_pipeline();
 	create_framebuffers();
+
+	// rt
+	create_raytracing_pipeline_layout();
+	create_raytracing_pipeline();
 
 	load_model();
 
@@ -706,6 +719,8 @@ void BaseApplication::setup_raytracing_device_functions()
 		vkGetInstanceProcAddr(m_instance, "vkCmdBuildAccelerationStructureNV");
 	evkGetAccelerationStructureHandleNV = (PFN_vkGetAccelerationStructureHandleNV)
 		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureHandleNV");
+	evkCreateRayTracingPipelinesNV = (PFN_vkCreateRayTracingPipelinesNV)
+		vkGetInstanceProcAddr(m_instance, "vkCreateRayTracingPipelinesNV");
 }
 
 void BaseApplication::pick_gpu()
@@ -760,7 +775,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 			!chain_details.present_modes.empty();
 	}
 
-	bool supported_features = features.samplerAnisotropy;
+	bool supported_features = features.vertexPipelineStoresAndAtomics && features.samplerAnisotropy;
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
@@ -821,6 +836,7 @@ void BaseApplication::create_logical_device()
 
 	VkPhysicalDeviceFeatures device_features = {};
 	device_features.samplerAnisotropy = VK_TRUE;
+	device_features.vertexPipelineStoresAndAtomics = VK_TRUE;
 
 	VkDeviceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1855,6 +1871,98 @@ void BaseApplication::create_top_acceleration_structure()
 
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 
+}
+
+void BaseApplication::create_raytracing_pipeline_layout()
+{
+	VkDescriptorSetLayoutBinding lb_0 = {};
+	lb_0.binding = 0;
+	lb_0.descriptorCount = 1;
+	lb_0.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	lb_0.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+
+	VkDescriptorSetLayoutBinding lb_1 = {};
+	lb_1.binding = 1;
+	lb_1.descriptorCount = 1;
+	lb_1.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV | VK_SHADER_STAGE_INTERSECTION_BIT_NV;
+	
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
+		lb_0, lb_1
+	};
+
+	VkDescriptorSetLayoutCreateInfo li = {};
+	li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	li.bindingCount = uint32_t(bindings.size());
+	li.pBindings = bindings.data();
+	auto res = vkCreateDescriptorSetLayout(m_device, &li, nullptr, &m_rt_descriptor_set_layout);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor set layout");
+
+	// Pipeline Layout
+	VkPipelineLayoutCreateInfo plci = {};
+	plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	plci.setLayoutCount = 1;
+	plci.pSetLayouts = &m_rt_descriptor_set_layout;
+	plci.pushConstantRangeCount = 0;
+	plci.pPushConstantRanges = nullptr;
+
+	res = vkCreatePipelineLayout(m_device, &plci, nullptr, &m_rt_pipeline_layout);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create pipeline layout");
+	}
+}
+
+void BaseApplication::create_raytracing_pipeline()
+{
+	// raygen
+	auto raygen_module = create_shader_module(read_file("resources/simple.rgen.spv"));
+	auto chit_module = create_shader_module(read_file("resources/simple.rchit.spv"));
+	auto miss_module = create_shader_module(read_file("resources/simple.rmiss.spv"));
+
+	VkPipelineShaderStageCreateInfo rgci = {};
+	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	rgci.flags = 0;
+	rgci.stage = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	rgci.module = raygen_module;
+	rgci.pName = "main";
+
+	VkPipelineShaderStageCreateInfo chci = {};
+	chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	chci.flags = 0;
+	chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	chci.module = chit_module;
+	chci.pName = "main";
+
+	VkPipelineShaderStageCreateInfo mci = {};
+	mci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	mci.flags = 0;
+	mci.stage = VK_SHADER_STAGE_MISS_BIT_NV;
+	mci.module = miss_module;
+	mci.pName = "main";
+
+	std::array<VkPipelineShaderStageCreateInfo, 3> stages = { rgci, chci, mci };
+
+	VkRayTracingShaderGroupCreateInfoNV gci = {};
+	gci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	gci.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
+	gci.generalShader = VK_SHADER_UNUSED_NV;
+	gci.closestHitShader = 1;
+	gci.anyHitShader = VK_SHADER_UNUSED_NV;
+	gci.intersectionShader = VK_SHADER_UNUSED_NV;
+
+	VkRayTracingPipelineCreateInfoNV ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
+	ci.flags = 0;
+	ci.stageCount = uint32_t(stages.size());
+	ci.pStages = stages.data();
+	ci.groupCount = 1;
+	ci.pGroups = &gci;
+	ci.maxRecursionDepth = 1;
+	ci.layout = m_rt_pipeline_layout;
+	ci.basePipelineHandle = VK_NULL_HANDLE;
+		
+	auto res = evkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create a raytracing pipeline");
 }
 
 void BaseApplication::create_texture_image()
