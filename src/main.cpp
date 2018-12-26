@@ -29,6 +29,23 @@
 const int MAX_FRAMES_IN_FLIGHT = 3;
 #define ENABLE_VALIDATION_LAYERS
 
+struct VkGeometryInstanceNV
+{
+	float          transform[12];
+	uint32_t       instanceCustomIndex : 24;
+	uint32_t       mask : 8;
+	uint32_t       instanceOffset : 24;
+	uint32_t       flags : 8;
+	uint64_t       accelerationStructureHandle;
+};
+
+static PFN_vkCreateAccelerationStructureNV evkCreateAccelerationStructureNV;
+static PFN_vkDestroyAccelerationStructureNV evkDestroyAccelerationStructureNV;
+static PFN_vkGetAccelerationStructureMemoryRequirementsNV evkGetAccelerationStructureMemoryRequirementsNV;
+static PFN_vkBindAccelerationStructureMemoryNV evkBindAccelerationStructureMemoryNV;
+static PFN_vkCmdBuildAccelerationStructureNV evkCmdBuildAccelerationStructureNV;
+static PFN_vkGetAccelerationStructureHandleNV evkGetAccelerationStructureHandleNV;
+
 struct QueueFamilyIndices
 {
 	std::optional<uint32_t> graphics_family;
@@ -112,6 +129,27 @@ struct CameraMatrices
 	glm::mat4 proj;
 };
 
+struct ASBuffers
+{
+	VkAccelerationStructureNV structure{ VK_NULL_HANDLE };
+	VkDeviceMemory memory{ VK_NULL_HANDLE };
+	VkBuffer scratch_buffer{ VK_NULL_HANDLE };
+	VkDeviceMemory scratch_memory{ VK_NULL_HANDLE };
+	VkBuffer instances{ VK_NULL_HANDLE };
+	VkDeviceMemory instances_memory{ VK_NULL_HANDLE };
+
+	void destroy(VkDevice device)
+	{
+		evkDestroyAccelerationStructureNV(device, structure, nullptr);
+		vkDestroyBuffer(device, scratch_buffer, nullptr);
+		vkDestroyBuffer(device, instances, nullptr);
+		vkFreeMemory(device, memory, nullptr);
+		vkFreeMemory(device, scratch_memory, nullptr);
+		vkFreeMemory(device, instances_memory, nullptr);
+		std::memset(this, VK_NULL_HANDLE, sizeof(ASBuffers));
+	}
+};
+
 class BaseApplication
 {
 public:
@@ -132,6 +170,7 @@ private:
 
 	void setup_debug_callback();
 	void destroy_debug_callback();
+	void setup_raytracing_device_functions();
 
 	void pick_gpu();
 	bool check_device_extension_support(VkPhysicalDevice gpu) const;
@@ -139,7 +178,7 @@ private:
 	QueueFamilyIndices find_queue_families(VkPhysicalDevice gpu) const;
 
 	void create_logical_device();
-
+	
 	void create_surface();
 	
 	SwapchainSupportDetails query_swapchain_support(VkPhysicalDevice gpu) const;
@@ -176,6 +215,9 @@ private:
 	void create_vertex_buffer();
 	void create_index_buffer();
 	void create_uniform_buffers();
+
+	void create_bottom_acceleration_structure();
+	void create_top_acceleration_structure();
 
 	void create_texture_image();
 	void create_texture_image_view();
@@ -245,6 +287,9 @@ private:
 	VkDeviceMemory m_vertex_buffer_memory{ VK_NULL_HANDLE };
 	VkBuffer m_index_buffer{ VK_NULL_HANDLE };
 	VkDeviceMemory m_index_buffer_memory{ VK_NULL_HANDLE };
+
+	ASBuffers m_bottom_as;
+	ASBuffers m_top_as;
 
 	std::vector<VkBuffer> m_uni_buffers;
 	std::vector<VkDeviceMemory> m_uni_buffer_memory;
@@ -322,6 +367,17 @@ bool format_has_stencil_component(VkFormat format)
 	return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
+VkPhysicalDeviceRayTracingPropertiesNV get_raytracing_properties(VkPhysicalDevice gpu)
+{
+	VkPhysicalDeviceProperties2 props = {};
+	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	VkPhysicalDeviceRayTracingPropertiesNV rt_props = {};
+	rt_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PROPERTIES_NV;
+	props.pNext = &rt_props;
+	vkGetPhysicalDeviceProperties2(gpu, &props);
+	return rt_props;
+}
+
 };
 
 
@@ -352,6 +408,7 @@ BaseApplication::BaseApplication()
 #endif
 
 	m_device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_NV_RAY_TRACING_EXTENSION_NAME);
 }
 
 BaseApplication::~BaseApplication()
@@ -384,11 +441,13 @@ void BaseApplication::init_vulkan()
 	if (m_enable_validation_layers) {
 		setup_debug_callback();
 	}
+	setup_raytracing_device_functions();
 
 	create_surface();
 
 	pick_gpu();
 	create_logical_device();
+	
 	create_command_pools();
 
 	create_swapchain();
@@ -411,6 +470,9 @@ void BaseApplication::init_vulkan()
 
 	create_descriptor_pool();
 	create_descriptor_sets();
+
+	create_bottom_acceleration_structure();
+	create_top_acceleration_structure();
 
 	create_command_buffers();
 
@@ -465,9 +527,10 @@ void BaseApplication::cleanup_swapchain()
 
 	// no need to free desc sets because we destroy the pool
 	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
-
-	vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-						 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+	if (m_device) {
+		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+							 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+	}
 	for (auto fb : m_swapchain_fbs) {
 		vkDestroyFramebuffer(m_device, fb, nullptr);
 	}
@@ -490,6 +553,11 @@ void BaseApplication::cleanup_swapchain()
 void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
+
+	if (m_device) {
+		m_top_as.destroy(m_device);
+		m_bottom_as.destroy(m_device);
+	}
 
 	if (m_device) {
 		vkDestroySampler(m_device, m_texture_sampler, nullptr);
@@ -531,7 +599,7 @@ void BaseApplication::create_instance()
 	ai.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 	ai.pEngineName = "-";
 	ai.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-	ai.apiVersion = VK_API_VERSION_1_0;
+	ai.apiVersion = VK_API_VERSION_1_1;
 
 	auto required_exts = get_required_extensions();
 
@@ -624,6 +692,22 @@ void BaseApplication::destroy_debug_callback()
 	if (func) func(m_instance, m_debug_callback, nullptr);
 }
 
+void BaseApplication::setup_raytracing_device_functions()
+{
+	evkCreateAccelerationStructureNV = (PFN_vkCreateAccelerationStructureNV)
+		vkGetInstanceProcAddr(m_instance, "vkCreateAccelerationStructureNV");
+	evkDestroyAccelerationStructureNV = (PFN_vkDestroyAccelerationStructureNV)
+		vkGetInstanceProcAddr(m_instance, "vkDestroyAccelerationStructureNV");
+	evkGetAccelerationStructureMemoryRequirementsNV = (PFN_vkGetAccelerationStructureMemoryRequirementsNV)
+		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureMemoryRequirementsNV");
+	evkBindAccelerationStructureMemoryNV = (PFN_vkBindAccelerationStructureMemoryNV)
+		vkGetInstanceProcAddr(m_instance, "vkBindAccelerationStructureMemoryNV");
+	evkCmdBuildAccelerationStructureNV = (PFN_vkCmdBuildAccelerationStructureNV)
+		vkGetInstanceProcAddr(m_instance, "vkCmdBuildAccelerationStructureNV");
+	evkGetAccelerationStructureHandleNV = (PFN_vkGetAccelerationStructureHandleNV)
+		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureHandleNV");
+}
+
 void BaseApplication::pick_gpu()
 {
 	uint32_t gpu_count = 0;
@@ -663,8 +747,6 @@ bool BaseApplication::check_device_extension_support(VkPhysicalDevice gpu) const
 
 bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 {
-	VkPhysicalDeviceProperties props;
-	vkGetPhysicalDeviceProperties(gpu, &props);
 	VkPhysicalDeviceFeatures features;
 	vkGetPhysicalDeviceFeatures(gpu, &features);
 	
@@ -1456,7 +1538,7 @@ void BaseApplication::load_model()
 			
 #endif
 		}
-		fprintf(stdout, "Loaded model: num vertices %u, num indices %u\n", 
+		fprintf(stdout, "Loaded model: num vertices %lu, num indices %lu\n", 
 				m_model_vertices.size(),
 				m_model_indices.size());
 	}
@@ -1521,6 +1603,258 @@ void BaseApplication::create_uniform_buffers()
 					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 					  m_uni_buffers[i], m_uni_buffer_memory[i]);
 	}
+}
+
+void BaseApplication::create_bottom_acceleration_structure()
+{
+	auto indices = find_queue_families(m_gpu);
+	uint32_t qidx[] = {
+		indices.graphics_family.value(),
+	};
+
+	VkGeometryTrianglesNV trias = {};
+	trias.sType = VK_STRUCTURE_TYPE_GEOMETRY_TRIANGLES_NV;
+	trias.indexCount = uint32_t(m_model_indices.size());
+	trias.indexData = m_index_buffer;
+	trias.indexOffset = 0;
+	trias.indexType = VK_INDEX_TYPE_UINT32;
+	trias.vertexCount = uint32_t(m_model_vertices.size());
+	trias.vertexData = m_vertex_buffer;
+	trias.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	trias.vertexOffset = 0;
+	trias.vertexStride = sizeof(Vertex);
+	trias.transformData = VK_NULL_HANDLE;
+
+	VkGeometryNV g = {};
+	g.sType = VK_STRUCTURE_TYPE_GEOMETRY_NV;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_NV;
+	g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_NV;
+	g.geometry.triangles = trias;
+	g.geometry.aabbs.sType = VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV;
+	g.geometry.aabbs.numAABBs = 0;
+	
+	VkAccelerationStructureInfoNV si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+	si.instanceCount = 0;
+	si.geometryCount = 1;
+	si.pGeometries = &g;
+	si.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
+
+	VkAccelerationStructureCreateInfoNV ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
+	ci.info = si;
+
+	auto res = evkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_bottom_as.structure);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
+	
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		ri.accelerationStructure = m_bottom_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+	
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+	
+		VkBufferCreateInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bi.size = mem_req.memoryRequirements.size;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		bi.pQueueFamilyIndices = qidx;
+		bi.queueFamilyIndexCount = 1;
+
+		res = vkCreateBuffer(m_device, &bi, nullptr, &m_bottom_as.scratch_buffer);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+		res = vkBindBufferMemory(m_device, m_bottom_as.scratch_buffer, m_bottom_as.scratch_memory, 0);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
+		fprintf(stdout, "BOTTOM AS: needed scratch memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		ri.accelerationStructure = m_bottom_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+		VkBindAccelerationStructureMemoryInfoNV bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		bi.accelerationStructure = m_bottom_as.structure;
+		bi.memory = m_bottom_as.memory;
+		bi.memoryOffset = 0;
+		bi.deviceIndexCount = 0;
+
+		res = evkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
+		fprintf(stdout, "BOTTOM AS: needed structure memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	
+	evkCmdBuildAccelerationStructureNV(cmd_buf, &si, VK_NULL_HANDLE, 0,
+									  VK_FALSE, m_bottom_as.structure, VK_NULL_HANDLE,
+									  m_bottom_as.scratch_buffer, 0);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+}
+
+void BaseApplication::create_top_acceleration_structure()
+{
+	auto indices = find_queue_families(m_gpu);
+	uint32_t qidx[] = {
+		indices.graphics_family.value(),
+	};
+
+	VkAccelerationStructureInfoNV si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+	si.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
+	si.instanceCount = 1;
+	si.geometryCount = 0;
+
+	VkAccelerationStructureCreateInfoNV ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
+	ci.info = si;
+
+	auto res = evkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_top_as.structure);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
+
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		ri.accelerationStructure = m_top_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+		VkBufferCreateInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bi.size = mem_req.memoryRequirements.size;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		bi.pQueueFamilyIndices = qidx;
+		bi.queueFamilyIndexCount = 1;
+
+		res = vkCreateBuffer(m_device, &bi, nullptr, &m_top_as.scratch_buffer);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+		res = vkBindBufferMemory(m_device, m_top_as.scratch_buffer, m_top_as.scratch_memory, 0);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
+		fprintf(stdout, "TOP AS: needed scratch memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		ri.accelerationStructure = m_top_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+		VkBindAccelerationStructureMemoryInfoNV bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		bi.accelerationStructure = m_top_as.structure;
+		bi.memory = m_top_as.memory;
+		bi.memoryOffset = 0;
+		bi.deviceIndexCount = 0;
+
+		res = evkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
+		fprintf(stdout, "TOP AS: needed structure memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	// configure instances
+	{
+		VkDeviceSize sz = sizeof(VkGeometryInstanceNV);
+		VkBufferCreateInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.size = sz;
+		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		bi.queueFamilyIndexCount = 1;
+		bi.pQueueFamilyIndices = qidx;
+		res = vkCreateBuffer(m_device, &bi, nullptr, &m_top_as.instances);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+		VkMemoryRequirements mem_req;
+		vkGetBufferMemoryRequirements(m_device, m_top_as.instances, &mem_req);
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.instances_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+		res = vkBindBufferMemory(m_device, m_top_as.instances, m_top_as.instances_memory, 0);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
+
+		uint64_t bottom_as_gpu_handle;
+		res = evkGetAccelerationStructureHandleNV(m_device, m_bottom_as.structure, sizeof(uint64_t), &bottom_as_gpu_handle);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to get acceleration structure gpu handle");
+
+		VkGeometryInstanceNV *instance_ptr;
+		res = vkMapMemory(m_device, m_top_as.instances_memory, 0, sz, 0, (void**)&instance_ptr);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to map buffer");
+		glm::mat4 transform = glm::mat4(1.0f);
+		transform = glm::transpose(transform);
+		memcpy(instance_ptr->transform, &transform[0][0], sizeof(float)*12);
+		instance_ptr->instanceCustomIndex = 0;
+		instance_ptr->mask = 0xFF;
+		instance_ptr->flags = 0;
+		instance_ptr->instanceOffset = 0;
+		instance_ptr->accelerationStructureHandle = bottom_as_gpu_handle;
+		vkUnmapMemory(m_device, m_top_as.instances_memory);
+	}
+
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+
+	evkCmdBuildAccelerationStructureNV(cmd_buf, &si, m_top_as.instances, 0,
+									   VK_FALSE, m_top_as.structure, VK_NULL_HANDLE,
+									   m_top_as.scratch_buffer, 0);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+
 }
 
 void BaseApplication::create_texture_image()
