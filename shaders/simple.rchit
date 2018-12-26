@@ -1,5 +1,4 @@
 #version 460
-#extension GL_ARB_separate_shader_objects : enable
 #extension GL_NV_ray_tracing : require
 
 struct HitInfo

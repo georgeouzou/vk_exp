@@ -228,8 +228,11 @@ private:
 	void create_texture_image_view();
 	void create_texture_sampler();
 
+	void create_rt_image();
 	void create_descriptor_pool();
 	void create_descriptor_sets();
+	void create_rt_descriptor_sets();
+	void create_shader_binding_table();
 
 	VkFormat find_supported_format(const std::vector<VkFormat> &candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const;
 	VkFormat find_supported_depth_format() const;
@@ -288,7 +291,7 @@ private:
 	VkDescriptorSetLayout m_rt_descriptor_set_layout{ VK_NULL_HANDLE };
 	VkPipelineLayout m_rt_pipeline_layout {VK_NULL_HANDLE};
 	VkPipeline m_rt_pipeline{ VK_NULL_HANDLE };
-
+	
 	std::vector<Vertex> m_model_vertices;
 	std::vector<uint32_t> m_model_indices;
 
@@ -299,6 +302,11 @@ private:
 
 	ASBuffers m_bottom_as;
 	ASBuffers m_top_as;
+	VkImage m_rt_img{ VK_NULL_HANDLE };
+	VkDeviceMemory m_rt_img_memory{ VK_NULL_HANDLE };
+	VkImageView m_rt_img_view{ VK_NULL_HANDLE };
+	VkBuffer m_rt_sbt{ VK_NULL_HANDLE };
+	VkDeviceMemory m_rt_sbt_memory{ VK_NULL_HANDLE };
 
 	std::vector<VkBuffer> m_uni_buffers;
 	std::vector<VkDeviceMemory> m_uni_buffer_memory;
@@ -310,6 +318,7 @@ private:
 
 	VkDescriptorPool m_desc_pool{ VK_NULL_HANDLE };
 	std::vector<VkDescriptorSet> m_desc_sets;
+	std::vector<VkDescriptorSet> m_rt_desc_sets;
 
 	VkCommandPool m_graphics_cmd_pool{ VK_NULL_HANDLE };
 	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
@@ -462,6 +471,7 @@ void BaseApplication::init_vulkan()
 	create_swapchain();
 	create_image_views();
 	create_depth_resources();
+	create_rt_image();
 
 	create_render_pass();
 	create_descriptor_set_layout();
@@ -481,11 +491,13 @@ void BaseApplication::init_vulkan()
 	create_texture_image_view();
 	create_texture_sampler();
 
-	create_descriptor_pool();
-	create_descriptor_sets();
-
 	create_bottom_acceleration_structure();
 	create_top_acceleration_structure();
+
+	create_descriptor_pool();
+	create_descriptor_sets();
+	create_rt_descriptor_sets();
+	create_shader_binding_table();
 
 	create_command_buffers();
 
@@ -507,6 +519,7 @@ void BaseApplication::recreate_swapchain()
 	create_swapchain();
 	create_image_views();
 	create_depth_resources();
+	create_rt_image();
 
 	create_render_pass();
 	create_descriptor_set_layout();
@@ -516,6 +529,7 @@ void BaseApplication::recreate_swapchain()
 
 	create_descriptor_pool();
 	create_descriptor_sets();
+	create_rt_descriptor_sets();
 
 	create_command_buffers();
 }
@@ -557,6 +571,13 @@ void BaseApplication::cleanup_swapchain()
 	if (m_depth_img) vkDestroyImage(m_device, m_depth_img, nullptr);
 	if (m_depth_img_memory) vkFreeMemory(m_device, m_depth_img_memory, nullptr);
 
+	// cleanup raytracing stuff
+	if (m_device) {
+		vkDestroyImageView(m_device, m_rt_img_view, nullptr);
+		vkDestroyImage(m_device, m_rt_img, nullptr);
+		vkFreeMemory(m_device, m_rt_img_memory, nullptr);
+	}
+
 	for (auto img_view : m_swapchain_img_views) {
 		vkDestroyImageView(m_device, img_view, nullptr);
 	}
@@ -567,7 +588,11 @@ void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
 
+	// cleanup raytracing stuff
 	if (m_device) {
+		vkDestroyDescriptorSetLayout(m_device, m_rt_descriptor_set_layout, nullptr);
+		vkDestroyPipelineLayout(m_device, m_rt_pipeline_layout, nullptr);
+		vkDestroyPipeline(m_device, m_rt_pipeline, nullptr);
 		m_top_as.destroy(m_device);
 		m_bottom_as.destroy(m_device);
 	}
@@ -582,6 +607,7 @@ void BaseApplication::cleanup()
 		vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
 		vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
 	}
+	
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 		vkDestroyFence(m_device, m_fen_flight[i], nullptr);
@@ -1885,7 +1911,7 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_1.binding = 1;
 	lb_1.descriptorCount = 1;
 	lb_1.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
-	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV | VK_SHADER_STAGE_INTERSECTION_BIT_NV;
+	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 	
 	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
 		lb_0, lb_1
@@ -1921,48 +1947,67 @@ void BaseApplication::create_raytracing_pipeline()
 
 	VkPipelineShaderStageCreateInfo rgci = {};
 	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	rgci.flags = 0;
 	rgci.stage = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 	rgci.module = raygen_module;
 	rgci.pName = "main";
 
 	VkPipelineShaderStageCreateInfo chci = {};
 	chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	chci.flags = 0;
 	chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
 	chci.module = chit_module;
 	chci.pName = "main";
 
 	VkPipelineShaderStageCreateInfo mci = {};
 	mci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	mci.flags = 0;
 	mci.stage = VK_SHADER_STAGE_MISS_BIT_NV;
 	mci.module = miss_module;
 	mci.pName = "main";
 
 	std::array<VkPipelineShaderStageCreateInfo, 3> stages = { rgci, chci, mci };
 
-	VkRayTracingShaderGroupCreateInfoNV gci = {};
-	gci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	gci.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
-	gci.generalShader = VK_SHADER_UNUSED_NV;
-	gci.closestHitShader = 1;
-	gci.anyHitShader = VK_SHADER_UNUSED_NV;
-	gci.intersectionShader = VK_SHADER_UNUSED_NV;
+	std::array<VkRayTracingShaderGroupCreateInfoNV, 3> groups = {};
+
+	// raygen group
+	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[0].generalShader = 0;
+	groups[0].closestHitShader = VK_SHADER_UNUSED_NV;
+	groups[0].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[0].intersectionShader = VK_SHADER_UNUSED_NV;
+	// hitgroup
+	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
+	groups[1].generalShader = VK_SHADER_UNUSED_NV;
+	groups[1].closestHitShader = 1;
+	groups[1].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[1].intersectionShader = VK_SHADER_UNUSED_NV;
+	// miss group
+	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[2].generalShader = 2;
+	groups[2].closestHitShader = VK_SHADER_UNUSED_NV;
+	groups[2].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[2].intersectionShader = VK_SHADER_UNUSED_NV;
+
 
 	VkRayTracingPipelineCreateInfoNV ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
 	ci.flags = 0;
 	ci.stageCount = uint32_t(stages.size());
 	ci.pStages = stages.data();
-	ci.groupCount = 1;
-	ci.pGroups = &gci;
+	ci.groupCount = uint32_t(groups.size());
+	ci.pGroups = groups.data();
 	ci.maxRecursionDepth = 1;
 	ci.layout = m_rt_pipeline_layout;
-	ci.basePipelineHandle = VK_NULL_HANDLE;
-		
+	
+
 	auto res = evkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create a raytracing pipeline");
+
+
+	vkDestroyShaderModule(m_device, raygen_module, nullptr);
+	vkDestroyShaderModule(m_device, chit_module, nullptr);
+	vkDestroyShaderModule(m_device, miss_module, nullptr);
 }
 
 void BaseApplication::create_texture_image()
@@ -2034,19 +2079,59 @@ void BaseApplication::create_texture_sampler()
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create texture sampler");
 }
 
+void BaseApplication::create_rt_image()
+{
+	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R8G8B8A8_UNORM,
+				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
+				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img, m_rt_img_memory);
+
+	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+
+	// we do the transition with a pipeline barrier as it is needed to be done only once
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+
+	VkImageMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = m_rt_img;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseMipLevel = 0;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = 1;
+	VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+	VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_NV;
+	barrier.srcAccessMask = 0;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+	vkCmdPipelineBarrier(cmd_buf, src_stage, dst_stage,
+						 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+}
+
 void BaseApplication::create_descriptor_pool()
 {
-	std::array<VkDescriptorPoolSize, 2> ps = {};
+	uint32_t imgs_count = (uint32_t)m_swapchain_images.size();
+	std::array<VkDescriptorPoolSize, 4> ps = {};
 	ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	ps[0].descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
+	ps[0].descriptorCount = imgs_count;
 	ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	ps[1].descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
+	ps[1].descriptorCount = imgs_count;
+	// rt descriptors 
+	ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	ps[2].descriptorCount = imgs_count;
+	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+	ps[3].descriptorCount = imgs_count;
 
 	VkDescriptorPoolCreateInfo pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	pi.poolSizeCount = uint32_t(ps.size());
 	pi.pPoolSizes = ps.data();
-	pi.maxSets = static_cast<uint32_t>(m_swapchain_images.size());
+	pi.maxSets = 2*imgs_count; // one for rt and one for default
 
 	auto res = vkCreateDescriptorPool(m_device, &pi, nullptr, &m_desc_pool);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor pool");
@@ -2096,6 +2181,64 @@ void BaseApplication::create_descriptor_sets()
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
 
+}
+
+void BaseApplication::create_rt_descriptor_sets()
+{
+	std::vector<VkDescriptorSetLayout> layouts(m_swapchain_images.size(), m_rt_descriptor_set_layout);
+
+	VkDescriptorSetAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	ai.descriptorPool = m_desc_pool;
+	ai.descriptorSetCount = uint32_t(m_swapchain_images.size());
+	ai.pSetLayouts = layouts.data();
+
+	m_rt_desc_sets.resize(m_swapchain_images.size());
+	auto res = vkAllocateDescriptorSets(m_device, &ai, m_rt_desc_sets.data());
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate descriptor sets");
+
+	for (size_t i = 0; i < m_rt_desc_sets.size(); ++i) {
+		VkDescriptorImageInfo ii = {};
+		ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		ii.imageView = m_rt_img_view;
+		ii.sampler = nullptr;
+		
+		VkWriteDescriptorSetAccelerationStructureNV dw_rt = {};
+		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_NV;
+		dw_rt.accelerationStructureCount = 1;
+		dw_rt.pAccelerationStructures = &m_top_as.structure;
+		
+		std::array<VkWriteDescriptorSet, 2> dw = {};
+		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[0].dstSet = m_rt_desc_sets[i];
+		dw[0].dstBinding = 0;
+		dw[0].dstArrayElement = 0;
+		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		dw[0].descriptorCount = 1;
+		dw[0].pImageInfo = &ii;
+
+		dw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[1].dstSet = m_rt_desc_sets[i];
+		dw[1].dstBinding = 1;
+		dw[1].dstArrayElement = 0;
+		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+		dw[1].descriptorCount = 1;
+		dw[1].pNext = &dw_rt;
+
+		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
+	}
+
+}
+
+void BaseApplication::create_shader_binding_table()
+{
+	VkPhysicalDeviceRayTracingPropertiesNV props = vk_helpers::get_raytracing_properties(m_gpu);
+	
+	//vkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, )
+	//vkGetRayTracingShaderGroupHandlesNV()
+	//props.shaderGroupHandleSize 
+	//vkGetRayTracingShaderGroupHandlesNV()
+	//create_buffer()
 }
 
 VkFormat BaseApplication::find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const
