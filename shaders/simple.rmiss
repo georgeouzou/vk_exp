@@ -4,6 +4,7 @@
 struct HitInfo
 {
 	vec4 color_dist;
+	vec4 normal;
 };
 
 struct Attributes
@@ -18,5 +19,5 @@ void main()
 	uvec2 launch_index = gl_LaunchIDNV.xy;
 	vec2 dims = vec2(gl_LaunchSizeNV.xy);
 	
-	payload.color_dist = vec4(0.0, 0.0, 0.0, 0.0);
+	payload.color_dist = vec4(0.0, 0.0, 0.0, -1.0);
 }

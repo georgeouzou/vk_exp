@@ -80,14 +80,14 @@ struct Vertex
 {
 	glm::vec3 pos;
 	float pad0;
-	glm::vec3 color;
+	glm::vec3 normal;
 	float pad1;
 	glm::vec2 tex_coord;
 	glm::vec2 pad2;
 
 	bool operator == (const Vertex &other) const
 	{
-		return pos == other.pos && color == other.color && tex_coord == other.tex_coord;
+		return pos == other.pos && normal == other.normal && tex_coord == other.tex_coord;
 	}
 
 	static VkVertexInputBindingDescription get_binding_description()
@@ -110,7 +110,7 @@ struct Vertex
 		ad[1].binding = 0;
 		ad[1].location = 1;
 		ad[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-		ad[1].offset = offsetof(Vertex, color);
+		ad[1].offset = offsetof(Vertex, normal);
 		ad[2].binding = 0;
 		ad[2].location = 2;
 		ad[2].format = VK_FORMAT_R32G32_SFLOAT;
@@ -128,7 +128,7 @@ namespace std
 		size_t operator()(Vertex const& vertex) const
 		{
 			return ((hash<glm::vec3>()(vertex.pos) ^
-					(hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+					(hash<glm::vec3>()(vertex.normal) << 1)) >> 1) ^
 					(hash<glm::vec2>()(vertex.tex_coord) << 1);
 		}
 	};
@@ -1633,7 +1633,12 @@ void BaseApplication::load_model()
 				attrib.texcoords[2 * index.texcoord_index + 0],
 				1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
 			};
-			vertex.color = { 1.0f, 1.0f, 1.0f };
+
+			vertex.normal = {
+				attrib.normals[3 * index.normal_index + 0],
+				attrib.normals[3 * index.normal_index + 1],
+				attrib.normals[3 * index.normal_index + 2]
+			};
 #if 1
 			if (unique_vtx.count(vertex) == 0) {
 				unique_vtx[vertex] = uint32_t(m_model_vertices.size());
@@ -1644,7 +1649,7 @@ void BaseApplication::load_model()
 #else 
 			m_model_indices.push_back(m_model_vertices.size());
 			m_model_vertices.push_back(vertex);
-			
+		
 #endif
 		}
 		fprintf(stdout, "Loaded model: num vertices %lu, num indices %lu\n", 
@@ -2044,6 +2049,8 @@ void BaseApplication::create_raytracing_pipeline()
 	auto raygen_module = create_shader_module(read_file("resources/simple.rgen.spv"));
 	auto chit_module = create_shader_module(read_file("resources/simple.rchit.spv"));
 	auto miss_module = create_shader_module(read_file("resources/simple.rmiss.spv"));
+	auto shadow_chit_module = create_shader_module(read_file("resources/shadow.rchit.spv"));
+	auto shadow_miss_module = create_shader_module(read_file("resources/shadow.rmiss.spv"));
 
 	VkPipelineShaderStageCreateInfo rgci = {};
 	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -2063,9 +2070,21 @@ void BaseApplication::create_raytracing_pipeline()
 	mci.module = miss_module;
 	mci.pName = "main";
 
-	std::array<VkPipelineShaderStageCreateInfo, 3> stages = { rgci, chci, mci };
+	VkPipelineShaderStageCreateInfo shadow_chci = {};
+	shadow_chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shadow_chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	shadow_chci.module = shadow_chit_module;
+	shadow_chci.pName = "main";
 
-	std::array<VkRayTracingShaderGroupCreateInfoNV, 3> groups = {};
+	VkPipelineShaderStageCreateInfo shadow_mci = {};
+	shadow_mci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shadow_mci.stage = VK_SHADER_STAGE_MISS_BIT_NV;
+	shadow_mci.module = shadow_miss_module;
+	shadow_mci.pName = "main";
+
+	std::array<VkPipelineShaderStageCreateInfo, 5> stages = { rgci, chci, mci, shadow_chci, shadow_mci };
+
+	std::array<VkRayTracingShaderGroupCreateInfoNV, 5> groups = {};
 	
 	// raygen group
 	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
@@ -2088,6 +2107,20 @@ void BaseApplication::create_raytracing_pipeline()
 	groups[2].closestHitShader = VK_SHADER_UNUSED_NV;
 	groups[2].anyHitShader = VK_SHADER_UNUSED_NV;
 	groups[2].intersectionShader = VK_SHADER_UNUSED_NV;
+	// shadow hitgroup
+	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
+	groups[3].generalShader = VK_SHADER_UNUSED_NV;
+	groups[3].closestHitShader = 3;
+	groups[3].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[3].intersectionShader = VK_SHADER_UNUSED_NV;
+	// shadow miss group
+	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[4].generalShader = 4;
+	groups[4].closestHitShader = VK_SHADER_UNUSED_NV;
+	groups[4].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[4].intersectionShader = VK_SHADER_UNUSED_NV;
 
 
 	VkRayTracingPipelineCreateInfoNV ci = {};
@@ -2393,7 +2426,7 @@ void BaseApplication::create_shader_binding_table()
 	fprintf(stdout, "group base alignment %u\n", props.shaderGroupBaseAlignment);
 	fprintf(stdout, "group max stride %u\n", props.maxShaderGroupStride);
 
-	VkDeviceSize sz = 64 + 64 + 64;
+	VkDeviceSize sz = 64 + 64 + 64 + 64 + 64;
 	VkDeviceSize stride = 64;
 
 	create_buffer(sz, VK_BUFFER_USAGE_RAY_TRACING_BIT_NV, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, m_rt_sbt, m_rt_sbt_memory);
@@ -2406,13 +2439,17 @@ void BaseApplication::create_shader_binding_table()
 		throw std::runtime_error("shadergroup handle size is different than 16 bytes");
 	}
 
-	ShaderGroupHandle handles[3];
-	evkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, 3, sizeof(ShaderGroupHandle) * 3, handles);
+	ShaderGroupHandle handles[5];
+	evkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, 5, sizeof(ShaderGroupHandle) * 5, handles);
 	std::memcpy(data, &handles[0], sizeof(ShaderGroupHandle));
 	data += 64;
 	std::memcpy(data, &handles[1], sizeof(ShaderGroupHandle));
 	data += 64;
+	std::memcpy(data, &handles[3], sizeof(ShaderGroupHandle));
+	data += 64;
 	std::memcpy(data, &handles[2], sizeof(ShaderGroupHandle));
+	data += 64;
+	std::memcpy(data, &handles[4], sizeof(ShaderGroupHandle));
 
 	vkUnmapMemory(m_device, m_rt_sbt_memory);
 }
@@ -2571,7 +2608,7 @@ void BaseApplication::create_rt_command_buffers()
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
 		evkCmdTraceRaysNV(m_rt_cmd_buffers[i],
 			/*raygen sbt*/ m_rt_sbt, 0,
-			/*miss sbt*/   m_rt_sbt, 128, 64,
+			/*miss sbt*/   m_rt_sbt, 192, 64,
 			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
 
 
@@ -2643,7 +2680,7 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
 
 	CameraMatrices ubo = {};
-	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(-10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1;

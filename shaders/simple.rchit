@@ -4,12 +4,13 @@
 struct HitInfo
 {
 	vec4 color_dist;
+	vec4 normal;
 };
 
 struct TriVertex
 {
 	vec4 pos;
-	vec4 color;
+	vec4 normal;
 	vec4 tex_coord;
 };
 
@@ -46,7 +47,12 @@ void main()
 				vertices[vidx1].tex_coord.xy * barys.y +
 				vertices[vidx2].tex_coord.xy * barys.z;
 
-	vec3 hit_color = texture(tex_sampler, texc).rgb;
+	vec3 norm = vertices[vidx0].normal.xyz * barys.x +
+				vertices[vidx1].normal.xyz * barys.y +
+				vertices[vidx2].normal.xyz * barys.z;
+	
+	vec3 hit_color = texture(tex_sampler, texc).bgr;
 
-	payload.color_dist = vec4(hit_color, 0.0);
+	payload.color_dist = vec4(hit_color, gl_HitTNV);
+	payload.normal = vec4(norm, 0.0);
 }
