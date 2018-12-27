@@ -16,7 +16,7 @@ struct TriVertex
 	vec2 pad2;
 };
 
-layout(std430, binding = 2) readonly buffer TriVertices
+layout(std430, binding = 3) readonly buffer TriVertices
 {
 	TriVertex vertices[];
 };

@@ -140,6 +140,8 @@ struct CameraMatrices
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
+	glm::mat4 iview;
+	glm::mat4 iproj;
 };
 
 struct ASBuffers
@@ -1979,15 +1981,22 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 	lb_1.pImmutableSamplers = nullptr;
 
-	VkDescriptorSetLayoutBinding lb_2 = {};
+	VkDescriptorSetLayoutBinding lb_2;
 	lb_2.binding = 2;
 	lb_2.descriptorCount = 1;
-	lb_2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_2.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_2.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	lb_2.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 	lb_2.pImmutableSamplers = nullptr;
-	
-	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
-		lb_0, lb_1, lb_2
+
+	VkDescriptorSetLayoutBinding lb_3 = {};
+	lb_3.binding = 3;
+	lb_3.descriptorCount = 1;
+	lb_3.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lb_3.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_3.pImmutableSamplers = nullptr;
+
+	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
+		lb_0, lb_1, lb_2, lb_3
 	};
 
 	VkDescriptorSetLayoutCreateInfo sli = {};
@@ -2285,12 +2294,17 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw_rt.accelerationStructureCount = 1;
 		dw_rt.pAccelerationStructures = &m_top_as.structure;
 
-		VkDescriptorBufferInfo bi = {};
-		bi.buffer = m_vertex_buffer;
-		bi.offset = 0;
-		bi.range = m_model_vertices.size() * sizeof(Vertex);
+		VkDescriptorBufferInfo ubi = {};
+		ubi.buffer = m_uni_buffers[i];
+		ubi.offset = 0;
+		ubi.range = sizeof(CameraMatrices);
+
+		VkDescriptorBufferInfo vbi = {};
+		vbi.buffer = m_vertex_buffer;
+		vbi.offset = 0;
+		vbi.range = m_model_vertices.size() * sizeof(Vertex);
 		
-		std::array<VkWriteDescriptorSet, 3> dw = {};
+		std::array<VkWriteDescriptorSet, 4> dw = {};
 
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_rt_desc_sets[i];
@@ -2312,9 +2326,17 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw[2].dstSet = m_rt_desc_sets[i];
 		dw[2].dstBinding = 2;
 		dw[2].dstArrayElement = 0;
-		dw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		dw[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		dw[2].descriptorCount = 1;
-		dw[2].pBufferInfo = &bi;
+		dw[2].pBufferInfo = &ubi;
+
+		dw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[3].dstSet = m_rt_desc_sets[i];
+		dw[3].dstBinding = 3;
+		dw[3].dstArrayElement = 0;
+		dw[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		dw[3].descriptorCount = 1;
+		dw[3].pBufferInfo = &vbi;
 
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
@@ -2583,6 +2605,8 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1;
+	ubo.iview = glm::inverse(ubo.view * ubo.model);
+	ubo.iproj = glm::inverse(ubo.proj);
 
 	void *data;
 	auto res = vkMapMemory(m_device, m_uni_buffer_memory[idx], 0, sizeof(CameraMatrices), 0, &data);
