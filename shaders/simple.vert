@@ -6,6 +6,8 @@ layout(binding = 0) uniform CameraMatrices
 	mat4 model;
 	mat4 view;
 	mat4 proj;
+	mat4 iview;
+	mat4 iproj;
 } ubo;
 
 

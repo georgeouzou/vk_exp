@@ -61,6 +61,9 @@ endif()
 file(GLOB_RECURSE GLSL_SRC_FILES
 	"${SHADER_DIR}/*.frag"
 	"${SHADER_DIR}/*.vert"
+	"${SHADER_DIR}/*.rgen"
+	"${SHADER_DIR}/*.rchit"
+	"${SHADER_DIR}/*.rmiss"
 )
 
 foreach(GLSL ${GLSL_SRC_FILES})
@@ -69,7 +72,7 @@ foreach(GLSL ${GLSL_SRC_FILES})
 	add_custom_command(
 		OUTPUT ${SPIRV}
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_BINARY_DIR}/spirv_files/"
-		COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
+		COMMAND ${GLSL_VALIDATOR} -V  ${GLSL} -o ${SPIRV}
 		DEPENDS ${GLSL}
 	)
 	list(APPEND SPIRV_BINARY_FILES ${SPIRV})

@@ -29,6 +29,33 @@
 const int MAX_FRAMES_IN_FLIGHT = 3;
 #define ENABLE_VALIDATION_LAYERS
 
+struct VkGeometryInstanceNV
+{
+	float          transform[12];
+	uint32_t       instanceCustomIndex : 24;
+	uint32_t       mask : 8;
+	uint32_t       instanceOffset : 24;
+	uint32_t       flags : 8;
+	uint64_t       accelerationStructureHandle;
+};
+
+struct ShaderGroupHandle
+{
+	uint64_t i0;
+	uint64_t i1;
+};
+
+
+static PFN_vkCreateAccelerationStructureNV evkCreateAccelerationStructureNV;
+static PFN_vkDestroyAccelerationStructureNV evkDestroyAccelerationStructureNV;
+static PFN_vkGetAccelerationStructureMemoryRequirementsNV evkGetAccelerationStructureMemoryRequirementsNV;
+static PFN_vkBindAccelerationStructureMemoryNV evkBindAccelerationStructureMemoryNV;
+static PFN_vkCmdBuildAccelerationStructureNV evkCmdBuildAccelerationStructureNV;
+static PFN_vkGetAccelerationStructureHandleNV evkGetAccelerationStructureHandleNV;
+static PFN_vkCreateRayTracingPipelinesNV evkCreateRayTracingPipelinesNV;
+static PFN_vkGetRayTracingShaderGroupHandlesNV evkGetRayTracingShaderGroupHandlesNV;
+static PFN_vkCmdTraceRaysNV evkCmdTraceRaysNV;
+
 struct QueueFamilyIndices
 {
 	std::optional<uint32_t> graphics_family;
@@ -52,8 +79,11 @@ struct SwapchainSupportDetails
 struct Vertex
 {
 	glm::vec3 pos;
+	float pad0;
 	glm::vec3 color;
+	float pad1;
 	glm::vec2 tex_coord;
+	glm::vec2 pad2;
 
 	bool operator == (const Vertex &other) const
 	{
@@ -110,6 +140,29 @@ struct CameraMatrices
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
+	glm::mat4 iview;
+	glm::mat4 iproj;
+};
+
+struct ASBuffers
+{
+	VkAccelerationStructureNV structure{ VK_NULL_HANDLE };
+	VkDeviceMemory memory{ VK_NULL_HANDLE };
+	VkBuffer scratch_buffer{ VK_NULL_HANDLE };
+	VkDeviceMemory scratch_memory{ VK_NULL_HANDLE };
+	VkBuffer instances{ VK_NULL_HANDLE };
+	VkDeviceMemory instances_memory{ VK_NULL_HANDLE };
+
+	void destroy(VkDevice device)
+	{
+		if (structure) evkDestroyAccelerationStructureNV(device, structure, nullptr);
+		vkDestroyBuffer(device, scratch_buffer, nullptr);
+		vkDestroyBuffer(device, instances, nullptr);
+		vkFreeMemory(device, memory, nullptr);
+		vkFreeMemory(device, scratch_memory, nullptr);
+		vkFreeMemory(device, instances_memory, nullptr);
+		std::memset(this, VK_NULL_HANDLE, sizeof(ASBuffers));
+	}
 };
 
 class BaseApplication
@@ -119,6 +172,7 @@ public:
 	~BaseApplication();
 	void run();
 	void set_window_resized() { m_window_resized = true; }
+	void toggle_raytracing() { m_raytraced = !m_raytraced; }
 
 private:
 	void init_window();
@@ -132,6 +186,7 @@ private:
 
 	void setup_debug_callback();
 	void destroy_debug_callback();
+	void setup_raytracing_device_functions();
 
 	void pick_gpu();
 	bool check_device_extension_support(VkPhysicalDevice gpu) const;
@@ -139,7 +194,7 @@ private:
 	QueueFamilyIndices find_queue_families(VkPhysicalDevice gpu) const;
 
 	void create_logical_device();
-
+	
 	void create_surface();
 	
 	SwapchainSupportDetails query_swapchain_support(VkPhysicalDevice gpu) const;
@@ -153,8 +208,9 @@ private:
 	void create_descriptor_set_layout();
 	void create_graphics_pipeline();
 	VkShaderModule create_shader_module(const std::vector<char> &code) const;
+
 	void create_framebuffers();
-	
+
 	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
 	
 	void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
@@ -177,12 +233,20 @@ private:
 	void create_index_buffer();
 	void create_uniform_buffers();
 
+	void create_bottom_acceleration_structure();
+	void create_top_acceleration_structure();
+	void create_raytracing_pipeline_layout();
+	void create_raytracing_pipeline();
+
 	void create_texture_image();
 	void create_texture_image_view();
 	void create_texture_sampler();
 
+	void create_rt_image();
 	void create_descriptor_pool();
 	void create_descriptor_sets();
+	void create_rt_descriptor_sets();
+	void create_shader_binding_table();
 
 	VkFormat find_supported_format(const std::vector<VkFormat> &candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const;
 	VkFormat find_supported_depth_format() const;
@@ -190,6 +254,7 @@ private:
 
 	void create_command_pools();
 	void create_command_buffers();
+	void create_rt_command_buffers();
 	
 	void create_sync_objects();
 
@@ -203,6 +268,7 @@ private:
 	GLFWwindow *m_window{ nullptr };
 	uint32_t m_width{ 1024 };
 	uint32_t m_height{ 768 };
+	bool m_raytraced{ false };
 
 	std::vector<const char*> m_validation_layers;
 	bool m_enable_validation_layers;
@@ -237,7 +303,11 @@ private:
 	VkDescriptorSetLayout m_descriptor_set_layout{ VK_NULL_HANDLE };
 	VkPipelineLayout m_pipeline_layout{ VK_NULL_HANDLE };
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
-
+	
+	VkDescriptorSetLayout m_rt_descriptor_set_layout{ VK_NULL_HANDLE };
+	VkPipelineLayout m_rt_pipeline_layout {VK_NULL_HANDLE};
+	VkPipeline m_rt_pipeline{ VK_NULL_HANDLE };
+	
 	std::vector<Vertex> m_model_vertices;
 	std::vector<uint32_t> m_model_indices;
 
@@ -245,6 +315,14 @@ private:
 	VkDeviceMemory m_vertex_buffer_memory{ VK_NULL_HANDLE };
 	VkBuffer m_index_buffer{ VK_NULL_HANDLE };
 	VkDeviceMemory m_index_buffer_memory{ VK_NULL_HANDLE };
+
+	ASBuffers m_bottom_as;
+	ASBuffers m_top_as;
+	VkImage m_rt_img{ VK_NULL_HANDLE };
+	VkDeviceMemory m_rt_img_memory{ VK_NULL_HANDLE };
+	VkImageView m_rt_img_view{ VK_NULL_HANDLE };
+	VkBuffer m_rt_sbt{ VK_NULL_HANDLE };
+	VkDeviceMemory m_rt_sbt_memory{ VK_NULL_HANDLE };
 
 	std::vector<VkBuffer> m_uni_buffers;
 	std::vector<VkDeviceMemory> m_uni_buffer_memory;
@@ -256,10 +334,12 @@ private:
 
 	VkDescriptorPool m_desc_pool{ VK_NULL_HANDLE };
 	std::vector<VkDescriptorSet> m_desc_sets;
+	std::vector<VkDescriptorSet> m_rt_desc_sets;
 
 	VkCommandPool m_graphics_cmd_pool{ VK_NULL_HANDLE };
 	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
 	std::vector<VkCommandBuffer> m_cmd_buffers;
+	std::vector<VkCommandBuffer> m_rt_cmd_buffers;
 	
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_img_available{ VK_NULL_HANDLE };
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_render_finished{ VK_NULL_HANDLE };
@@ -284,6 +364,9 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action, 
 {
 	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
 		glfwSetWindowShouldClose(window, GLFW_TRUE);
+	} else if (key == GLFW_KEY_R && action == GLFW_PRESS) {
+		auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
+		app->toggle_raytracing();
 	}
 }
 
@@ -322,6 +405,43 @@ bool format_has_stencil_component(VkFormat format)
 	return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
+VkPhysicalDeviceRayTracingPropertiesNV get_raytracing_properties(VkPhysicalDevice gpu)
+{
+	VkPhysicalDeviceProperties2 props = {};
+	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	VkPhysicalDeviceRayTracingPropertiesNV rt_props = {};
+	rt_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PROPERTIES_NV;
+	props.pNext = &rt_props;
+	vkGetPhysicalDeviceProperties2(gpu, &props);
+	return rt_props;
+}
+
+void image_barrier(VkCommandBuffer commandBuffer,
+	VkImage image,
+	VkImageSubresourceRange& subresourceRange,
+	VkAccessFlags srcAccessMask,
+	VkAccessFlags dstAccessMask,
+	VkImageLayout oldLayout,
+	VkImageLayout newLayout)
+{
+	VkImageMemoryBarrier b = {};
+	b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	b.srcAccessMask = srcAccessMask;
+	b.dstAccessMask = dstAccessMask;
+	b.oldLayout = oldLayout;
+	b.newLayout = newLayout;
+	b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	b.image = image;
+	b.subresourceRange = subresourceRange;
+
+	vkCmdPipelineBarrier(commandBuffer,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		0, 0, nullptr, 0, nullptr, 1,
+		&b);
+}
+
 };
 
 
@@ -352,6 +472,7 @@ BaseApplication::BaseApplication()
 #endif
 
 	m_device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_NV_RAY_TRACING_EXTENSION_NAME);
 }
 
 BaseApplication::~BaseApplication()
@@ -384,21 +505,28 @@ void BaseApplication::init_vulkan()
 	if (m_enable_validation_layers) {
 		setup_debug_callback();
 	}
+	setup_raytracing_device_functions();
 
 	create_surface();
 
 	pick_gpu();
 	create_logical_device();
+	
 	create_command_pools();
 
 	create_swapchain();
 	create_image_views();
 	create_depth_resources();
+	create_rt_image();
 
 	create_render_pass();
 	create_descriptor_set_layout();
 	create_graphics_pipeline();
 	create_framebuffers();
+
+	// rt
+	create_raytracing_pipeline_layout();
+	create_raytracing_pipeline();
 
 	load_model();
 
@@ -409,10 +537,16 @@ void BaseApplication::init_vulkan()
 	create_texture_image_view();
 	create_texture_sampler();
 
+	create_bottom_acceleration_structure();
+	create_top_acceleration_structure();
+
 	create_descriptor_pool();
 	create_descriptor_sets();
+	create_rt_descriptor_sets();
+	create_shader_binding_table();
 
 	create_command_buffers();
+	create_rt_command_buffers();
 
 	create_sync_objects();
 }
@@ -432,6 +566,7 @@ void BaseApplication::recreate_swapchain()
 	create_swapchain();
 	create_image_views();
 	create_depth_resources();
+	create_rt_image();
 
 	create_render_pass();
 	create_descriptor_set_layout();
@@ -441,8 +576,10 @@ void BaseApplication::recreate_swapchain()
 
 	create_descriptor_pool();
 	create_descriptor_sets();
+	create_rt_descriptor_sets();
 
 	create_command_buffers();
+	create_rt_command_buffers();
 }
 
 void BaseApplication::main_loop()
@@ -465,9 +602,12 @@ void BaseApplication::cleanup_swapchain()
 
 	// no need to free desc sets because we destroy the pool
 	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
-
-	vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-						 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+	if (m_device) {
+		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+			static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
+		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+							 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+	}
 	for (auto fb : m_swapchain_fbs) {
 		vkDestroyFramebuffer(m_device, fb, nullptr);
 	}
@@ -481,6 +621,13 @@ void BaseApplication::cleanup_swapchain()
 	if (m_depth_img) vkDestroyImage(m_device, m_depth_img, nullptr);
 	if (m_depth_img_memory) vkFreeMemory(m_device, m_depth_img_memory, nullptr);
 
+	// cleanup raytracing stuff
+	if (m_device) {
+		vkDestroyImageView(m_device, m_rt_img_view, nullptr);
+		vkDestroyImage(m_device, m_rt_img, nullptr);
+		vkFreeMemory(m_device, m_rt_img_memory, nullptr);
+	}
+
 	for (auto img_view : m_swapchain_img_views) {
 		vkDestroyImageView(m_device, img_view, nullptr);
 	}
@@ -490,6 +637,17 @@ void BaseApplication::cleanup_swapchain()
 void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
+
+	// cleanup raytracing stuff
+	if (m_device) {
+		vkDestroyBuffer(m_device, m_rt_sbt, nullptr);
+		vkFreeMemory(m_device, m_rt_sbt_memory, nullptr);
+		vkDestroyDescriptorSetLayout(m_device, m_rt_descriptor_set_layout, nullptr);
+		vkDestroyPipelineLayout(m_device, m_rt_pipeline_layout, nullptr);
+		vkDestroyPipeline(m_device, m_rt_pipeline, nullptr);
+		m_top_as.destroy(m_device);
+		m_bottom_as.destroy(m_device);
+	}
 
 	if (m_device) {
 		vkDestroySampler(m_device, m_texture_sampler, nullptr);
@@ -501,6 +659,7 @@ void BaseApplication::cleanup()
 		vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
 		vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
 	}
+	
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 		vkDestroyFence(m_device, m_fen_flight[i], nullptr);
@@ -531,7 +690,7 @@ void BaseApplication::create_instance()
 	ai.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 	ai.pEngineName = "-";
 	ai.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-	ai.apiVersion = VK_API_VERSION_1_0;
+	ai.apiVersion = VK_API_VERSION_1_1;
 
 	auto required_exts = get_required_extensions();
 
@@ -582,7 +741,7 @@ std::vector<const char*> BaseApplication::get_required_extensions() const
 	glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
 
 	std::vector<const char*> extensions(glfw_exts, glfw_exts + glfw_ext_count);
-	
+
 	if (m_enable_validation_layers) {
 		extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 	}
@@ -624,6 +783,28 @@ void BaseApplication::destroy_debug_callback()
 	if (func) func(m_instance, m_debug_callback, nullptr);
 }
 
+void BaseApplication::setup_raytracing_device_functions()
+{
+	evkCreateAccelerationStructureNV = (PFN_vkCreateAccelerationStructureNV)
+		vkGetInstanceProcAddr(m_instance, "vkCreateAccelerationStructureNV");
+	evkDestroyAccelerationStructureNV = (PFN_vkDestroyAccelerationStructureNV)
+		vkGetInstanceProcAddr(m_instance, "vkDestroyAccelerationStructureNV");
+	evkGetAccelerationStructureMemoryRequirementsNV = (PFN_vkGetAccelerationStructureMemoryRequirementsNV)
+		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureMemoryRequirementsNV");
+	evkBindAccelerationStructureMemoryNV = (PFN_vkBindAccelerationStructureMemoryNV)
+		vkGetInstanceProcAddr(m_instance, "vkBindAccelerationStructureMemoryNV");
+	evkCmdBuildAccelerationStructureNV = (PFN_vkCmdBuildAccelerationStructureNV)
+		vkGetInstanceProcAddr(m_instance, "vkCmdBuildAccelerationStructureNV");
+	evkGetAccelerationStructureHandleNV = (PFN_vkGetAccelerationStructureHandleNV)
+		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureHandleNV");
+	evkCreateRayTracingPipelinesNV = (PFN_vkCreateRayTracingPipelinesNV)
+		vkGetInstanceProcAddr(m_instance, "vkCreateRayTracingPipelinesNV");
+	evkGetRayTracingShaderGroupHandlesNV = (PFN_vkGetRayTracingShaderGroupHandlesNV)
+		vkGetInstanceProcAddr(m_instance, "vkGetRayTracingShaderGroupHandlesNV");
+	evkCmdTraceRaysNV = (PFN_vkCmdTraceRaysNV)
+		vkGetInstanceProcAddr(m_instance, "vkCmdTraceRaysNV");
+}
+
 void BaseApplication::pick_gpu()
 {
 	uint32_t gpu_count = 0;
@@ -663,8 +844,6 @@ bool BaseApplication::check_device_extension_support(VkPhysicalDevice gpu) const
 
 bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 {
-	VkPhysicalDeviceProperties props;
-	vkGetPhysicalDeviceProperties(gpu, &props);
 	VkPhysicalDeviceFeatures features;
 	vkGetPhysicalDeviceFeatures(gpu, &features);
 	
@@ -678,7 +857,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 			!chain_details.present_modes.empty();
 	}
 
-	bool supported_features = features.samplerAnisotropy;
+	bool supported_features = features.vertexPipelineStoresAndAtomics && features.samplerAnisotropy;
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
@@ -739,6 +918,7 @@ void BaseApplication::create_logical_device()
 
 	VkPhysicalDeviceFeatures device_features = {};
 	device_features.samplerAnisotropy = VK_TRUE;
+	device_features.vertexPipelineStoresAndAtomics = VK_TRUE;
 
 	VkDeviceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -875,7 +1055,7 @@ void BaseApplication::create_swapchain()
 	ci.imageColorSpace = format.colorSpace;
 	ci.imageExtent = extent;
 	ci.imageArrayLayers = 1; // this is for stereo
-	ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
 	if (family_indices.graphics_family != family_indices.present_family) {
 		ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -989,8 +1169,8 @@ void BaseApplication::create_descriptor_set_layout()
 {
 	VkDescriptorSetLayoutBinding lb = {};
 	lb.binding = 0;
-	lb.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	lb.descriptorCount = 1;
+	lb.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	lb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	lb.pImmutableSamplers = nullptr;
 
@@ -998,8 +1178,8 @@ void BaseApplication::create_descriptor_set_layout()
 	sb.binding = 1;
 	sb.descriptorCount = 1;
 	sb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	sb.pImmutableSamplers = nullptr;
 	sb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	sb.pImmutableSamplers = nullptr;
 
 	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
 		lb, sb
@@ -1429,7 +1609,16 @@ void BaseApplication::load_model()
 	}
 
 	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
-
+#if 1
+	m_model_vertices.resize(3);
+	m_model_vertices[0].pos = glm::vec3(-1.0f, 0.0f, 0.0f);
+	m_model_vertices[1].pos = glm::vec3(1.0f, 0.0f, 0.0f);
+	m_model_vertices[2].pos = glm::vec3(0.0, 1.0f, 0.0f);
+	m_model_vertices[0].color = glm::vec3(1.0f, 0.0f, 0.0f);
+	m_model_vertices[1].color = glm::vec3(0.0f, 1.0f, 0.0f);
+	m_model_vertices[2].color = glm::vec3(0.0f, 0.0f, 1.0f);
+	m_model_indices = { 0, 1, 2 };
+#else 
 	for (const auto &shape : shapes) {
 		for (const auto &index : shape.mesh.indices) {
 			Vertex vertex = {};
@@ -1456,10 +1645,11 @@ void BaseApplication::load_model()
 			
 #endif
 		}
-		fprintf(stdout, "Loaded model: num vertices %u, num indices %u\n", 
+		fprintf(stdout, "Loaded model: num vertices %lu, num indices %lu\n", 
 				m_model_vertices.size(),
 				m_model_indices.size());
 	}
+#endif
 }
 
 void BaseApplication::create_vertex_buffer()
@@ -1478,7 +1668,7 @@ void BaseApplication::create_vertex_buffer()
 	std::memcpy(data, m_model_vertices.data(), bufsize);
 	vkUnmapMemory(m_device, staging_memory);
 
-	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_vertex_buffer_memory);
 	copy_buffer(staging_buffer, m_vertex_buffer, bufsize);
 
@@ -1521,6 +1711,387 @@ void BaseApplication::create_uniform_buffers()
 					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 					  m_uni_buffers[i], m_uni_buffer_memory[i]);
 	}
+}
+
+void BaseApplication::create_bottom_acceleration_structure()
+{
+	auto indices = find_queue_families(m_gpu);
+	uint32_t qidx[] = {
+		indices.graphics_family.value(),
+	};
+
+	VkGeometryTrianglesNV trias = {};
+	trias.sType = VK_STRUCTURE_TYPE_GEOMETRY_TRIANGLES_NV;
+	trias.indexCount = uint32_t(m_model_indices.size());
+	trias.indexData = m_index_buffer;
+	trias.indexOffset = 0;
+	trias.indexType = VK_INDEX_TYPE_UINT32;
+	trias.vertexCount = uint32_t(m_model_vertices.size());
+	trias.vertexData = m_vertex_buffer;
+	trias.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	trias.vertexOffset = 0;
+	trias.vertexStride = sizeof(Vertex);
+	trias.transformData = VK_NULL_HANDLE;
+
+	VkGeometryNV g = {};
+	g.sType = VK_STRUCTURE_TYPE_GEOMETRY_NV;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_NV;
+	g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_NV;
+	g.geometry.triangles = trias;
+	g.geometry.aabbs.sType = VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV;
+	g.geometry.aabbs.numAABBs = 0;
+	
+	VkAccelerationStructureInfoNV si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+	si.instanceCount = 0;
+	si.geometryCount = 1;
+	si.pGeometries = &g;
+	si.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
+
+	VkAccelerationStructureCreateInfoNV ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
+	ci.info = si;
+
+	auto res = evkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_bottom_as.structure);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
+	
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		ri.accelerationStructure = m_bottom_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+	
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+	
+		VkBufferCreateInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bi.size = mem_req.memoryRequirements.size;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		bi.pQueueFamilyIndices = qidx;
+		bi.queueFamilyIndexCount = 1;
+
+		res = vkCreateBuffer(m_device, &bi, nullptr, &m_bottom_as.scratch_buffer);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+		res = vkBindBufferMemory(m_device, m_bottom_as.scratch_buffer, m_bottom_as.scratch_memory, 0);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
+		fprintf(stdout, "BOTTOM AS: needed scratch memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		ri.accelerationStructure = m_bottom_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+		VkBindAccelerationStructureMemoryInfoNV bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		bi.accelerationStructure = m_bottom_as.structure;
+		bi.memory = m_bottom_as.memory;
+		bi.memoryOffset = 0;
+		bi.deviceIndexCount = 0;
+
+		res = evkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
+		fprintf(stdout, "BOTTOM AS: needed structure memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	
+	evkCmdBuildAccelerationStructureNV(cmd_buf, &si, VK_NULL_HANDLE, 0,
+									  VK_FALSE, m_bottom_as.structure, VK_NULL_HANDLE,
+									  m_bottom_as.scratch_buffer, 0);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+}
+
+void BaseApplication::create_top_acceleration_structure()
+{
+	auto indices = find_queue_families(m_gpu);
+	uint32_t qidx[] = {
+		indices.graphics_family.value(),
+	};
+
+	VkAccelerationStructureInfoNV si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+	si.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
+	si.instanceCount = 1;
+	si.geometryCount = 0;
+
+	VkAccelerationStructureCreateInfoNV ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
+	ci.info = si;
+
+	auto res = evkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_top_as.structure);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
+
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		ri.accelerationStructure = m_top_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+		VkBufferCreateInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bi.size = mem_req.memoryRequirements.size;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		bi.pQueueFamilyIndices = qidx;
+		bi.queueFamilyIndexCount = 1;
+
+		res = vkCreateBuffer(m_device, &bi, nullptr, &m_top_as.scratch_buffer);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+		res = vkBindBufferMemory(m_device, m_top_as.scratch_buffer, m_top_as.scratch_memory, 0);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
+		fprintf(stdout, "TOP AS: needed scratch memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		ri.accelerationStructure = m_top_as.structure;
+		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+		VkBindAccelerationStructureMemoryInfoNV bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		bi.accelerationStructure = m_top_as.structure;
+		bi.memory = m_top_as.memory;
+		bi.memoryOffset = 0;
+		bi.deviceIndexCount = 0;
+
+		res = evkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
+		fprintf(stdout, "TOP AS: needed structure memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+	}
+
+	// configure instances
+	{
+		VkDeviceSize sz = sizeof(VkGeometryInstanceNV);
+		VkBufferCreateInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.size = sz;
+		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		bi.queueFamilyIndexCount = 1;
+		bi.pQueueFamilyIndices = qidx;
+		res = vkCreateBuffer(m_device, &bi, nullptr, &m_top_as.instances);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+		VkMemoryRequirements mem_req;
+		vkGetBufferMemoryRequirements(m_device, m_top_as.instances, &mem_req);
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.instances_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+		res = vkBindBufferMemory(m_device, m_top_as.instances, m_top_as.instances_memory, 0);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
+
+		uint64_t bottom_as_gpu_handle;
+		res = evkGetAccelerationStructureHandleNV(m_device, m_bottom_as.structure, sizeof(uint64_t), &bottom_as_gpu_handle);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to get acceleration structure gpu handle");
+
+		VkGeometryInstanceNV *instance_ptr;
+		res = vkMapMemory(m_device, m_top_as.instances_memory, 0, sz, 0, (void**)&instance_ptr);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to map buffer");
+		glm::mat4 transform = glm::mat4(1.0f);
+		transform = glm::transpose(transform);
+		memcpy(instance_ptr->transform, &transform[0][0], sizeof(float)*12);
+		instance_ptr->instanceCustomIndex = 0;
+		instance_ptr->mask = 0xFF;
+		instance_ptr->flags = 0;
+		instance_ptr->instanceOffset = 0;
+		instance_ptr->accelerationStructureHandle = bottom_as_gpu_handle;
+		vkUnmapMemory(m_device, m_top_as.instances_memory);
+	}
+
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+
+	evkCmdBuildAccelerationStructureNV(cmd_buf, &si, m_top_as.instances, 0,
+									   VK_FALSE, m_top_as.structure, VK_NULL_HANDLE,
+									   m_top_as.scratch_buffer, 0);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+
+}
+
+void BaseApplication::create_raytracing_pipeline_layout()
+{
+	VkDescriptorSetLayoutBinding lb_0 = {};
+	lb_0.binding = 0;
+	lb_0.descriptorCount = 1;
+	lb_0.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+	lb_0.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_0.pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutBinding lb_1 = {};
+	lb_1.binding = 1;
+	lb_1.descriptorCount = 1;
+	lb_1.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_1.pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutBinding lb_2;
+	lb_2.binding = 2;
+	lb_2.descriptorCount = 1;
+	lb_2.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	lb_2.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_2.pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutBinding lb_3 = {};
+	lb_3.binding = 3;
+	lb_3.descriptorCount = 1;
+	lb_3.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lb_3.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_3.pImmutableSamplers = nullptr;
+
+	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
+		lb_0, lb_1, lb_2, lb_3
+	};
+
+	VkDescriptorSetLayoutCreateInfo sli = {};
+	sli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	sli.bindingCount = uint32_t(bindings.size());
+	sli.pBindings = bindings.data();
+	sli.flags = 0;
+	auto res = vkCreateDescriptorSetLayout(m_device, &sli, nullptr, &m_rt_descriptor_set_layout);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor set layout");
+
+	// Pipeline Layout
+	VkPipelineLayoutCreateInfo plci = {};
+	plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	plci.flags = 0;
+	plci.setLayoutCount = 1;
+	plci.pSetLayouts = &m_rt_descriptor_set_layout;
+	plci.pushConstantRangeCount = 0;
+	plci.pPushConstantRanges = nullptr;
+
+	res = vkCreatePipelineLayout(m_device, &plci, nullptr, &m_rt_pipeline_layout);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create pipeline layout");
+	}
+}
+
+void BaseApplication::create_raytracing_pipeline()
+{
+	// raygen
+	auto raygen_module = create_shader_module(read_file("resources/simple.rgen.spv"));
+	auto chit_module = create_shader_module(read_file("resources/simple.rchit.spv"));
+	auto miss_module = create_shader_module(read_file("resources/simple.rmiss.spv"));
+
+	VkPipelineShaderStageCreateInfo rgci = {};
+	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	rgci.stage = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	rgci.module = raygen_module;
+	rgci.pName = "main";
+
+	VkPipelineShaderStageCreateInfo chci = {};
+	chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	chci.module = chit_module;
+	chci.pName = "main";
+
+	VkPipelineShaderStageCreateInfo mci = {};
+	mci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	mci.stage = VK_SHADER_STAGE_MISS_BIT_NV;
+	mci.module = miss_module;
+	mci.pName = "main";
+
+	std::array<VkPipelineShaderStageCreateInfo, 3> stages = { rgci, chci, mci };
+
+	std::array<VkRayTracingShaderGroupCreateInfoNV, 3> groups = {};
+	
+	// raygen group
+	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[0].generalShader = 0;
+	groups[0].closestHitShader = VK_SHADER_UNUSED_NV;
+	groups[0].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[0].intersectionShader = VK_SHADER_UNUSED_NV;
+	// hitgroup
+	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
+	groups[1].generalShader = VK_SHADER_UNUSED_NV;
+	groups[1].closestHitShader = 1;
+	groups[1].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[1].intersectionShader = VK_SHADER_UNUSED_NV;
+	// miss group
+	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[2].generalShader = 2;
+	groups[2].closestHitShader = VK_SHADER_UNUSED_NV;
+	groups[2].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[2].intersectionShader = VK_SHADER_UNUSED_NV;
+
+
+	VkRayTracingPipelineCreateInfoNV ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
+	ci.flags = 0;
+	ci.stageCount = uint32_t(stages.size());
+	ci.pStages = stages.data();
+	ci.groupCount = uint32_t(groups.size());
+	ci.pGroups = groups.data();
+	ci.maxRecursionDepth = 1;
+	ci.layout = m_rt_pipeline_layout;
+	ci.basePipelineHandle = VK_NULL_HANDLE;
+	ci.basePipelineIndex = 0;
+	
+	auto res = evkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create a raytracing pipeline");
+
+	vkDestroyShaderModule(m_device, raygen_module, nullptr);
+	vkDestroyShaderModule(m_device, chit_module, nullptr);
+	vkDestroyShaderModule(m_device, miss_module, nullptr);
 }
 
 void BaseApplication::create_texture_image()
@@ -1592,19 +2163,61 @@ void BaseApplication::create_texture_sampler()
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create texture sampler");
 }
 
+void BaseApplication::create_rt_image()
+{
+	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R8G8B8A8_UNORM,
+				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
+				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img, m_rt_img_memory);
+
+	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+
+	// we do the transition with a pipeline barrier as it is needed to be done only once
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+
+	VkImageMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = m_rt_img;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseMipLevel = 0;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = 1;
+	VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+	VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_NV;
+	barrier.srcAccessMask = 0;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+	vkCmdPipelineBarrier(cmd_buf, src_stage, dst_stage,
+						 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+}
+
 void BaseApplication::create_descriptor_pool()
 {
-	std::array<VkDescriptorPoolSize, 2> ps = {};
+	uint32_t imgs_count = (uint32_t)m_swapchain_images.size();
+	std::array<VkDescriptorPoolSize, 5> ps = {};
 	ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	ps[0].descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
+	ps[0].descriptorCount = imgs_count;
 	ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	ps[1].descriptorCount = static_cast<uint32_t>(m_swapchain_images.size());
-
+	ps[1].descriptorCount = imgs_count;
+	// rt descriptors 
+	ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	ps[2].descriptorCount = imgs_count;
+	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+	ps[3].descriptorCount = imgs_count;
+	ps[4].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	ps[4].descriptorCount = imgs_count;
+	
 	VkDescriptorPoolCreateInfo pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	pi.poolSizeCount = uint32_t(ps.size());
 	pi.pPoolSizes = ps.data();
-	pi.maxSets = static_cast<uint32_t>(m_swapchain_images.size());
+	pi.maxSets = 2*imgs_count; // one for rt and one for default
 
 	auto res = vkCreateDescriptorPool(m_device, &pi, nullptr, &m_desc_pool);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor pool");
@@ -1654,6 +2267,112 @@ void BaseApplication::create_descriptor_sets()
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
 
+}
+
+void BaseApplication::create_rt_descriptor_sets()
+{
+	std::vector<VkDescriptorSetLayout> layouts(m_swapchain_images.size(), m_rt_descriptor_set_layout);
+
+	VkDescriptorSetAllocateInfo ai = {};
+	ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	ai.descriptorPool = m_desc_pool;
+	ai.descriptorSetCount = uint32_t(m_swapchain_images.size());
+	ai.pSetLayouts = layouts.data();
+
+	m_rt_desc_sets.resize(m_swapchain_images.size());
+	auto res = vkAllocateDescriptorSets(m_device, &ai, m_rt_desc_sets.data());
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate descriptor sets");
+
+	for (size_t i = 0; i < m_rt_desc_sets.size(); ++i) {
+		VkDescriptorImageInfo ii = {};
+		ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		ii.imageView = m_rt_img_view;
+		ii.sampler = nullptr;
+		
+		VkWriteDescriptorSetAccelerationStructureNV dw_rt = {};
+		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_NV;
+		dw_rt.accelerationStructureCount = 1;
+		dw_rt.pAccelerationStructures = &m_top_as.structure;
+
+		VkDescriptorBufferInfo ubi = {};
+		ubi.buffer = m_uni_buffers[i];
+		ubi.offset = 0;
+		ubi.range = sizeof(CameraMatrices);
+
+		VkDescriptorBufferInfo vbi = {};
+		vbi.buffer = m_vertex_buffer;
+		vbi.offset = 0;
+		vbi.range = m_model_vertices.size() * sizeof(Vertex);
+		
+		std::array<VkWriteDescriptorSet, 4> dw = {};
+
+		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[0].dstSet = m_rt_desc_sets[i];
+		dw[0].dstBinding = 0;
+		dw[0].dstArrayElement = 0;
+		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+		dw[0].descriptorCount = 1;
+		dw[0].pNext = &dw_rt;
+
+		dw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[1].dstSet = m_rt_desc_sets[i];
+		dw[1].dstBinding = 1;
+		dw[1].dstArrayElement = 0;
+		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		dw[1].descriptorCount = 1;
+		dw[1].pImageInfo = &ii;
+
+		dw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[2].dstSet = m_rt_desc_sets[i];
+		dw[2].dstBinding = 2;
+		dw[2].dstArrayElement = 0;
+		dw[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		dw[2].descriptorCount = 1;
+		dw[2].pBufferInfo = &ubi;
+
+		dw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[3].dstSet = m_rt_desc_sets[i];
+		dw[3].dstBinding = 3;
+		dw[3].dstArrayElement = 0;
+		dw[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		dw[3].descriptorCount = 1;
+		dw[3].pBufferInfo = &vbi;
+
+		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
+	}
+
+}
+
+void BaseApplication::create_shader_binding_table()
+{
+	VkPhysicalDeviceRayTracingPropertiesNV props = vk_helpers::get_raytracing_properties(m_gpu);
+	
+	fprintf(stdout, "group handle size %u\n", props.shaderGroupHandleSize);
+	fprintf(stdout, "group base alignment %u\n", props.shaderGroupBaseAlignment);
+	fprintf(stdout, "group max stride %u\n", props.maxShaderGroupStride);
+
+	VkDeviceSize sz = 64 + 64 + 64;
+	VkDeviceSize stride = 64;
+
+	create_buffer(sz, VK_BUFFER_USAGE_RAY_TRACING_BIT_NV, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, m_rt_sbt, m_rt_sbt_memory);
+
+	uint8_t *data;
+	auto res = vkMapMemory(m_device, m_rt_sbt_memory, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
+
+	if (props.shaderGroupHandleSize != sizeof(ShaderGroupHandle)) {
+		throw std::runtime_error("shadergroup handle size is different than 16 bytes");
+	}
+
+	ShaderGroupHandle handles[3];
+	evkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, 3, sizeof(ShaderGroupHandle) * 3, handles);
+	std::memcpy(data, &handles[0], sizeof(ShaderGroupHandle));
+	data += 64;
+	std::memcpy(data, &handles[1], sizeof(ShaderGroupHandle));
+	data += 64;
+	std::memcpy(data, &handles[2], sizeof(ShaderGroupHandle));
+
+	vkUnmapMemory(m_device, m_rt_sbt_memory);
 }
 
 VkFormat BaseApplication::find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const
@@ -1733,7 +2452,7 @@ void BaseApplication::create_command_buffers()
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to allocate command buffers");
 	}
-
+	
 	for (size_t i = 0; i < m_cmd_buffers.size(); ++i) {
 		VkCommandBufferBeginInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1755,7 +2474,7 @@ void BaseApplication::create_command_buffers()
 		rpbi.pClearValues = clear_values.data();
 
 		vkCmdBeginRenderPass(m_cmd_buffers[i], &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-		
+	
 		vkCmdBindPipeline(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 		
 		VkBuffer buffers[] = { m_vertex_buffer };
@@ -1773,7 +2492,75 @@ void BaseApplication::create_command_buffers()
 			throw std::runtime_error("failed to end recording commands");
 		}
 	}
+}
 
+void BaseApplication::create_rt_command_buffers()
+{
+	// the command buffers are the same number as the fbs;
+	m_rt_cmd_buffers.resize(m_swapchain_fbs.size());
+
+	VkCommandBufferAllocateInfo cbi = {};
+	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cbi.commandPool = m_graphics_cmd_pool;
+	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cbi.commandBufferCount = (uint32_t)m_rt_cmd_buffers.size();
+
+	auto res = vkAllocateCommandBuffers(m_device, &cbi, m_rt_cmd_buffers.data());
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to allocate command buffers");
+	}
+
+	for (size_t i = 0; i < m_rt_cmd_buffers.size(); ++i) {
+		VkCommandBufferBeginInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+		bi.pInheritanceInfo = nullptr;
+		res = vkBeginCommandBuffer(m_rt_cmd_buffers[i], &bi);
+		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
+
+		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img, isr,
+			0, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
+
+		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline);
+		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline_layout,
+			0, 1, &m_rt_desc_sets[i], 0, nullptr);
+		evkCmdTraceRaysNV(m_rt_cmd_buffers[i],
+			/*raygen sbt*/ m_rt_sbt, 0,
+			/*miss sbt*/   m_rt_sbt, 128, 64,
+			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
+
+
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
+			0, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img, isr,
+			VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		VkImageCopy cpy = {};
+		cpy.dstOffset = { 0, 0, 0 };
+		cpy.srcOffset = { 0, 0, 0 };
+		cpy.extent = { m_width, m_height, 1 };
+		cpy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		cpy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+
+		vkCmdCopyImage(m_rt_cmd_buffers[i],
+			m_rt_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
+			VK_ACCESS_TRANSFER_WRITE_BIT, 0,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+		res = vkEndCommandBuffer(m_rt_cmd_buffers[i]);
+		if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to end recording commands");
+		}
+	}
 }
 
 void BaseApplication::create_sync_objects()
@@ -1818,6 +2605,8 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1;
+	ubo.iview = glm::inverse(ubo.view * ubo.model);
+	ubo.iproj = glm::inverse(ubo.proj);
 
 	void *data;
 	auto res = vkMapMemory(m_device, m_uni_buffer_memory[idx], 0, sizeof(CameraMatrices), 0, &data);
@@ -1848,12 +2637,19 @@ void BaseApplication::draw_frame()
 	VkSubmitInfo si = {};
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	VkSemaphore wait_semaphores[] = { m_sem_img_available[m_current_frame_idx] };
-	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	
 	si.waitSemaphoreCount = 1;
 	si.pWaitSemaphores = wait_semaphores;
-	si.pWaitDstStageMask = wait_stages;
 	si.commandBufferCount = 1;
-	si.pCommandBuffers = &m_cmd_buffers[img_idx];
+	VkPipelineStageFlags wait_stages[1];
+	if (m_raytraced) {
+		wait_stages[0] = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		si.pCommandBuffers = &m_rt_cmd_buffers[img_idx];
+	} else {
+		wait_stages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		si.pCommandBuffers = &m_cmd_buffers[img_idx];
+	}
+	si.pWaitDstStageMask = wait_stages;
 	VkSemaphore signal_semaphores[] = { m_sem_render_finished[m_current_frame_idx] };
 	si.signalSemaphoreCount = 1;
 	si.pSignalSemaphores = signal_semaphores;
@@ -1898,3 +2694,5 @@ int main()
 
 	return EXIT_SUCCESS;
 }
+
+
