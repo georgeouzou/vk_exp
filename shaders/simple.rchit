@@ -20,9 +20,8 @@ layout(std440, binding = 2) buffer vbo
 };
 #endif
 
-layout(location = 0) rayPayloadNV HitInfo payload;
-
-hitAttributeNV vec2 bary;
+layout(location = 0) rayPayloadInNV HitInfo payload;
+					 hitAttributeNV vec2 bary;
 
 void main()
 {

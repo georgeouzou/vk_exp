@@ -11,7 +11,7 @@ struct Attributes
 	vec2 bary;
 };
 
-layout(location = 0) rayPayloadNV HitInfo payload;
+layout(location = 0) rayPayloadInNV HitInfo payload;
 
 void main()
 {

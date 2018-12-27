@@ -689,7 +689,7 @@ std::vector<const char*> BaseApplication::get_required_extensions() const
 	glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
 
 	std::vector<const char*> extensions(glfw_exts, glfw_exts + glfw_ext_count);
-	
+
 	if (m_enable_validation_layers) {
 		extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 	}
@@ -1113,8 +1113,8 @@ void BaseApplication::create_descriptor_set_layout()
 {
 	VkDescriptorSetLayoutBinding lb = {};
 	lb.binding = 0;
-	lb.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	lb.descriptorCount = 1;
+	lb.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	lb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	lb.pImmutableSamplers = nullptr;
 
@@ -1122,8 +1122,8 @@ void BaseApplication::create_descriptor_set_layout()
 	sb.binding = 1;
 	sb.descriptorCount = 1;
 	sb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	sb.pImmutableSamplers = nullptr;
 	sb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	sb.pImmutableSamplers = nullptr;
 
 	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
 		lb, sb
@@ -1904,29 +1904,33 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	VkDescriptorSetLayoutBinding lb_0 = {};
 	lb_0.binding = 0;
 	lb_0.descriptorCount = 1;
-	lb_0.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	lb_0.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 	lb_0.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_0.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_1 = {};
 	lb_1.binding = 1;
 	lb_1.descriptorCount = 1;
-	lb_1.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+	lb_1.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_1.pImmutableSamplers = nullptr;
 	
 	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
 		lb_0, lb_1
 	};
 
-	VkDescriptorSetLayoutCreateInfo li = {};
-	li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	li.bindingCount = uint32_t(bindings.size());
-	li.pBindings = bindings.data();
-	auto res = vkCreateDescriptorSetLayout(m_device, &li, nullptr, &m_rt_descriptor_set_layout);
+	VkDescriptorSetLayoutCreateInfo sli = {};
+	sli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	sli.bindingCount = uint32_t(bindings.size());
+	sli.pBindings = bindings.data();
+	sli.flags = 0;
+	auto res = vkCreateDescriptorSetLayout(m_device, &sli, nullptr, &m_rt_descriptor_set_layout);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create descriptor set layout");
 
 	// Pipeline Layout
 	VkPipelineLayoutCreateInfo plci = {};
 	plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	plci.flags = 0;
 	plci.setLayoutCount = 1;
 	plci.pSetLayouts = &m_rt_descriptor_set_layout;
 	plci.pushConstantRangeCount = 0;
@@ -1966,7 +1970,7 @@ void BaseApplication::create_raytracing_pipeline()
 	std::array<VkPipelineShaderStageCreateInfo, 3> stages = { rgci, chci, mci };
 
 	std::array<VkRayTracingShaderGroupCreateInfoNV, 3> groups = {};
-
+	
 	// raygen group
 	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
 	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
@@ -1999,11 +2003,11 @@ void BaseApplication::create_raytracing_pipeline()
 	ci.pGroups = groups.data();
 	ci.maxRecursionDepth = 1;
 	ci.layout = m_rt_pipeline_layout;
+	ci.basePipelineHandle = VK_NULL_HANDLE;
+	ci.basePipelineIndex = 0;
 	
-
 	auto res = evkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create a raytracing pipeline");
-
 
 	vkDestroyShaderModule(m_device, raygen_module, nullptr);
 	vkDestroyShaderModule(m_device, chit_module, nullptr);
@@ -2211,7 +2215,7 @@ void BaseApplication::create_rt_descriptor_sets()
 		std::array<VkWriteDescriptorSet, 2> dw = {};
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_rt_desc_sets[i];
-		dw[0].dstBinding = 0;
+		dw[0].dstBinding = 1;
 		dw[0].dstArrayElement = 0;
 		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		dw[0].descriptorCount = 1;
@@ -2219,7 +2223,7 @@ void BaseApplication::create_rt_descriptor_sets()
 
 		dw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[1].dstSet = m_rt_desc_sets[i];
-		dw[1].dstBinding = 1;
+		dw[1].dstBinding = 0;
 		dw[1].dstArrayElement = 0;
 		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 		dw[1].descriptorCount = 1;
@@ -2233,7 +2237,9 @@ void BaseApplication::create_rt_descriptor_sets()
 void BaseApplication::create_shader_binding_table()
 {
 	VkPhysicalDeviceRayTracingPropertiesNV props = vk_helpers::get_raytracing_properties(m_gpu);
-	
+
+
+
 	//vkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, )
 	//vkGetRayTracingShaderGroupHandlesNV()
 	//props.shaderGroupHandleSize 
