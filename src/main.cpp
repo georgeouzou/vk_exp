@@ -79,8 +79,11 @@ struct SwapchainSupportDetails
 struct Vertex
 {
 	glm::vec3 pos;
+	float pad0;
 	glm::vec3 color;
+	float pad1;
 	glm::vec2 tex_coord;
+	glm::vec2 pad2;
 
 	bool operator == (const Vertex &other) const
 	{
@@ -1604,11 +1607,14 @@ void BaseApplication::load_model()
 	}
 
 	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
-#if 0
+#if 1
 	m_model_vertices.resize(3);
 	m_model_vertices[0].pos = glm::vec3(-1.0f, 0.0f, 0.0f);
 	m_model_vertices[1].pos = glm::vec3(1.0f, 0.0f, 0.0f);
-	m_model_vertices[2].pos = glm::vec3(0.0, -1.0f, 0.0f);
+	m_model_vertices[2].pos = glm::vec3(0.0, 1.0f, 0.0f);
+	m_model_vertices[0].color = glm::vec3(1.0f, 0.0f, 0.0f);
+	m_model_vertices[1].color = glm::vec3(0.0f, 1.0f, 0.0f);
+	m_model_vertices[2].color = glm::vec3(0.0f, 0.0f, 1.0f);
 	m_model_indices = { 0, 1, 2 };
 #else 
 	for (const auto &shape : shapes) {
@@ -1660,7 +1666,7 @@ void BaseApplication::create_vertex_buffer()
 	std::memcpy(data, m_model_vertices.data(), bufsize);
 	vkUnmapMemory(m_device, staging_memory);
 
-	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_vertex_buffer_memory);
 	copy_buffer(staging_buffer, m_vertex_buffer, bufsize);
 
@@ -1972,9 +1978,16 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_1.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 	lb_1.pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutBinding lb_2 = {};
+	lb_2.binding = 2;
+	lb_2.descriptorCount = 1;
+	lb_2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lb_2.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_2.pImmutableSamplers = nullptr;
 	
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
-		lb_0, lb_1
+	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+		lb_0, lb_1, lb_2
 	};
 
 	VkDescriptorSetLayoutCreateInfo sli = {};
@@ -2178,7 +2191,7 @@ void BaseApplication::create_rt_image()
 void BaseApplication::create_descriptor_pool()
 {
 	uint32_t imgs_count = (uint32_t)m_swapchain_images.size();
-	std::array<VkDescriptorPoolSize, 4> ps = {};
+	std::array<VkDescriptorPoolSize, 5> ps = {};
 	ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	ps[0].descriptorCount = imgs_count;
 	ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2188,7 +2201,9 @@ void BaseApplication::create_descriptor_pool()
 	ps[2].descriptorCount = imgs_count;
 	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 	ps[3].descriptorCount = imgs_count;
-
+	ps[4].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	ps[4].descriptorCount = imgs_count;
+	
 	VkDescriptorPoolCreateInfo pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	pi.poolSizeCount = uint32_t(ps.size());
@@ -2269,23 +2284,37 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_NV;
 		dw_rt.accelerationStructureCount = 1;
 		dw_rt.pAccelerationStructures = &m_top_as.structure;
+
+		VkDescriptorBufferInfo bi = {};
+		bi.buffer = m_vertex_buffer;
+		bi.offset = 0;
+		bi.range = m_model_vertices.size() * sizeof(Vertex);
 		
-		std::array<VkWriteDescriptorSet, 2> dw = {};
+		std::array<VkWriteDescriptorSet, 3> dw = {};
+
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_rt_desc_sets[i];
-		dw[0].dstBinding = 1;
+		dw[0].dstBinding = 0;
 		dw[0].dstArrayElement = 0;
-		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 		dw[0].descriptorCount = 1;
-		dw[0].pImageInfo = &ii;
+		dw[0].pNext = &dw_rt;
 
 		dw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[1].dstSet = m_rt_desc_sets[i];
-		dw[1].dstBinding = 0;
+		dw[1].dstBinding = 1;
 		dw[1].dstArrayElement = 0;
-		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		dw[1].descriptorCount = 1;
-		dw[1].pNext = &dw_rt;
+		dw[1].pImageInfo = &ii;
+
+		dw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[2].dstSet = m_rt_desc_sets[i];
+		dw[2].dstBinding = 2;
+		dw[2].dstArrayElement = 0;
+		dw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		dw[2].descriptorCount = 1;
+		dw[2].pBufferInfo = &bi;
 
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
@@ -2641,3 +2670,5 @@ int main()
 
 	return EXIT_SUCCESS;
 }
+
+

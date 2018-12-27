@@ -6,19 +6,21 @@ struct HitInfo
 	vec4 color_dist;
 };
 
-#if 0
-struct STriVertex
+struct TriVertex
 {
 	vec3 pos;
+	float pad;
 	vec3 color;
+	float pad1;
 	vec2 tex_coord;
+	vec2 pad2;
 };
 
-layout(std440, binding = 2) buffer vbo
+layout(std430, binding = 2) readonly buffer TriVertices
 {
-	STriVertex vertices[];
+	TriVertex vertices[];
 };
-#endif
+
 
 layout(location = 0) rayPayloadInNV HitInfo payload;
 					 hitAttributeNV vec2 bary;
@@ -27,9 +29,10 @@ void main()
 {
 	vec3 barys = vec3(1.0f - bary.x - bary.y, bary.x, bary.y);
 
-	const vec3 A = vec3(1.0, 0.0, 0.0);
-	const vec3 B = vec3(0.0, 1.0, 0.0);
-	const vec3 C = vec3(0.0, 0.0, 1.0);
-	vec3 hit_color = A * barys.x + B * barys.y + C * barys.z;
+	uint id = 3 * gl_PrimitiveID;
+	vec3 hit_color = vertices[id+0].color.xyz * barys.x +
+					 vertices[id+1].color.xyz * barys.y +
+					 vertices[id+2].color.xyz * barys.z;
+		
 	payload.color_dist = vec4(hit_color, 0.0);
 }
