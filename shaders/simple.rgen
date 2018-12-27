@@ -34,7 +34,7 @@ void main()
 
 	
 	vec3 origin = (ubo.iview * vec4(0, 0, 0, 1.0)).xyz;
-	vec4 target = ubo.iproj * vec4(d.x, -d.y, 1.0, 1.0);
+	vec4 target = ubo.iproj * vec4(d.x, d.y, 1.0, 1.0);
 	vec3 dir = (ubo.iview * vec4(target.xyz, 0.0)).xyz;
 	//vec3 origin = vec3(d.x, -d.y, 1.0);
 	//vec3 dir = vec3(0.0, 0.0, -1.0);

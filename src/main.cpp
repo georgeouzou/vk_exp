@@ -1609,15 +1609,17 @@ void BaseApplication::load_model()
 	}
 
 	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
-#if 1
-	m_model_vertices.resize(3);
-	m_model_vertices[0].pos = glm::vec3(-1.0f, 0.0f, 0.0f);
-	m_model_vertices[1].pos = glm::vec3(1.0f, 0.0f, 0.0f);
-	m_model_vertices[2].pos = glm::vec3(0.0, 1.0f, 0.0f);
+#if 0
+	m_model_vertices.resize(4);
+	m_model_vertices[0].pos = glm::vec3(-1.0f, -1.0f, 0.0f);
+	m_model_vertices[1].pos = glm::vec3(+1.0f, -1.0f, 0.0f);
+	m_model_vertices[2].pos = glm::vec3(+1.0f, +1.0f, 0.0f);
+	m_model_vertices[3].pos = glm::vec3(-1.0f, +1.0f, 0.0f);
 	m_model_vertices[0].color = glm::vec3(1.0f, 0.0f, 0.0f);
 	m_model_vertices[1].color = glm::vec3(0.0f, 1.0f, 0.0f);
 	m_model_vertices[2].color = glm::vec3(0.0f, 0.0f, 1.0f);
-	m_model_indices = { 0, 1, 2 };
+	m_model_vertices[3].color = glm::vec3(1.0f, 1.0f, 1.0f);
+	m_model_indices = { 0, 1, 2, 2, 3, 0 };
 #else 
 	for (const auto &shape : shapes) {
 		for (const auto &index : shape.mesh.indices) {
@@ -1692,7 +1694,7 @@ void BaseApplication::create_index_buffer()
 	std::memcpy(data, m_model_indices.data(), bufsize);
 	vkUnmapMemory(m_device, staging_mem);
 
-	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_index_buffer, m_index_buffer_memory);
 	copy_buffer(staging_buf, m_index_buffer, bufsize);
 
@@ -1995,8 +1997,22 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_3.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
 	lb_3.pImmutableSamplers = nullptr;
 
-	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
-		lb_0, lb_1, lb_2, lb_3
+	VkDescriptorSetLayoutBinding lb_4 = {};
+	lb_4.binding = 4;
+	lb_4.descriptorCount = 1;
+	lb_4.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lb_4.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_4.pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutBinding lb_5 = {};
+	lb_5.binding = 5;
+	lb_5.descriptorCount = 1;
+	lb_5.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	lb_5.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_5.pImmutableSamplers = nullptr;
+
+	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
+		lb_0, lb_1, lb_2, lb_3, lb_4, lb_5
 	};
 
 	VkDescriptorSetLayoutCreateInfo sli = {};
@@ -2211,7 +2227,7 @@ void BaseApplication::create_descriptor_pool()
 	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 	ps[3].descriptorCount = imgs_count;
 	ps[4].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	ps[4].descriptorCount = imgs_count;
+	ps[4].descriptorCount = 2*imgs_count;
 	
 	VkDescriptorPoolCreateInfo pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2303,8 +2319,18 @@ void BaseApplication::create_rt_descriptor_sets()
 		vbi.buffer = m_vertex_buffer;
 		vbi.offset = 0;
 		vbi.range = m_model_vertices.size() * sizeof(Vertex);
+
+		VkDescriptorBufferInfo ibi = {};
+		ibi.buffer = m_index_buffer;
+		ibi.offset = 0;
+		ibi.range = m_model_indices.size() * sizeof(uint32_t);
+
+		VkDescriptorImageInfo si = {};
+		si.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		si.imageView = m_texture_img_view;
+		si.sampler = m_texture_sampler;
 		
-		std::array<VkWriteDescriptorSet, 4> dw = {};
+		std::array<VkWriteDescriptorSet, 6> dw = {};
 
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_rt_desc_sets[i];
@@ -2338,6 +2364,22 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw[3].descriptorCount = 1;
 		dw[3].pBufferInfo = &vbi;
 
+		dw[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[4].dstSet = m_rt_desc_sets[i];
+		dw[4].dstBinding = 4;
+		dw[4].dstArrayElement = 0;
+		dw[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		dw[4].descriptorCount = 1;
+		dw[4].pBufferInfo = &ibi;
+
+		dw[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[5].dstSet = m_rt_desc_sets[i];
+		dw[5].dstBinding = 5;
+		dw[5].dstArrayElement = 0;
+		dw[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		dw[5].descriptorCount = 1;
+		dw[5].pImageInfo = &si;
+		   
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
 
