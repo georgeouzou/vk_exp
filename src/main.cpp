@@ -39,6 +39,13 @@ struct VkGeometryInstanceNV
 	uint64_t       accelerationStructureHandle;
 };
 
+struct ShaderGroupHandle
+{
+	uint64_t i0;
+	uint64_t i1;
+};
+
+
 static PFN_vkCreateAccelerationStructureNV evkCreateAccelerationStructureNV;
 static PFN_vkDestroyAccelerationStructureNV evkDestroyAccelerationStructureNV;
 static PFN_vkGetAccelerationStructureMemoryRequirementsNV evkGetAccelerationStructureMemoryRequirementsNV;
@@ -46,7 +53,8 @@ static PFN_vkBindAccelerationStructureMemoryNV evkBindAccelerationStructureMemor
 static PFN_vkCmdBuildAccelerationStructureNV evkCmdBuildAccelerationStructureNV;
 static PFN_vkGetAccelerationStructureHandleNV evkGetAccelerationStructureHandleNV;
 static PFN_vkCreateRayTracingPipelinesNV evkCreateRayTracingPipelinesNV;
-
+static PFN_vkGetRayTracingShaderGroupHandlesNV evkGetRayTracingShaderGroupHandlesNV;
+static PFN_vkCmdTraceRaysNV evkCmdTraceRaysNV;
 
 struct QueueFamilyIndices
 {
@@ -159,6 +167,7 @@ public:
 	~BaseApplication();
 	void run();
 	void set_window_resized() { m_window_resized = true; }
+	void toggle_raytracing() { m_raytraced = !m_raytraced; }
 
 private:
 	void init_window();
@@ -240,6 +249,7 @@ private:
 
 	void create_command_pools();
 	void create_command_buffers();
+	void create_rt_command_buffers();
 	
 	void create_sync_objects();
 
@@ -253,6 +263,7 @@ private:
 	GLFWwindow *m_window{ nullptr };
 	uint32_t m_width{ 1024 };
 	uint32_t m_height{ 768 };
+	bool m_raytraced{ false };
 
 	std::vector<const char*> m_validation_layers;
 	bool m_enable_validation_layers;
@@ -323,6 +334,7 @@ private:
 	VkCommandPool m_graphics_cmd_pool{ VK_NULL_HANDLE };
 	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
 	std::vector<VkCommandBuffer> m_cmd_buffers;
+	std::vector<VkCommandBuffer> m_rt_cmd_buffers;
 	
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_img_available{ VK_NULL_HANDLE };
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_render_finished{ VK_NULL_HANDLE };
@@ -347,6 +359,9 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action, 
 {
 	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
 		glfwSetWindowShouldClose(window, GLFW_TRUE);
+	} else if (key == GLFW_KEY_R && action == GLFW_PRESS) {
+		auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
+		app->toggle_raytracing();
 	}
 }
 
@@ -394,6 +409,32 @@ VkPhysicalDeviceRayTracingPropertiesNV get_raytracing_properties(VkPhysicalDevic
 	props.pNext = &rt_props;
 	vkGetPhysicalDeviceProperties2(gpu, &props);
 	return rt_props;
+}
+
+void image_barrier(VkCommandBuffer commandBuffer,
+	VkImage image,
+	VkImageSubresourceRange& subresourceRange,
+	VkAccessFlags srcAccessMask,
+	VkAccessFlags dstAccessMask,
+	VkImageLayout oldLayout,
+	VkImageLayout newLayout)
+{
+	VkImageMemoryBarrier b = {};
+	b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	b.srcAccessMask = srcAccessMask;
+	b.dstAccessMask = dstAccessMask;
+	b.oldLayout = oldLayout;
+	b.newLayout = newLayout;
+	b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	b.image = image;
+	b.subresourceRange = subresourceRange;
+
+	vkCmdPipelineBarrier(commandBuffer,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		0, 0, nullptr, 0, nullptr, 1,
+		&b);
 }
 
 };
@@ -500,6 +541,7 @@ void BaseApplication::init_vulkan()
 	create_shader_binding_table();
 
 	create_command_buffers();
+	create_rt_command_buffers();
 
 	create_sync_objects();
 }
@@ -532,6 +574,7 @@ void BaseApplication::recreate_swapchain()
 	create_rt_descriptor_sets();
 
 	create_command_buffers();
+	create_rt_command_buffers();
 }
 
 void BaseApplication::main_loop()
@@ -555,6 +598,8 @@ void BaseApplication::cleanup_swapchain()
 	// no need to free desc sets because we destroy the pool
 	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
 	if (m_device) {
+		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+			static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
 		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
 							 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
 	}
@@ -590,6 +635,8 @@ void BaseApplication::cleanup()
 
 	// cleanup raytracing stuff
 	if (m_device) {
+		vkDestroyBuffer(m_device, m_rt_sbt, nullptr);
+		vkFreeMemory(m_device, m_rt_sbt_memory, nullptr);
 		vkDestroyDescriptorSetLayout(m_device, m_rt_descriptor_set_layout, nullptr);
 		vkDestroyPipelineLayout(m_device, m_rt_pipeline_layout, nullptr);
 		vkDestroyPipeline(m_device, m_rt_pipeline, nullptr);
@@ -747,6 +794,10 @@ void BaseApplication::setup_raytracing_device_functions()
 		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureHandleNV");
 	evkCreateRayTracingPipelinesNV = (PFN_vkCreateRayTracingPipelinesNV)
 		vkGetInstanceProcAddr(m_instance, "vkCreateRayTracingPipelinesNV");
+	evkGetRayTracingShaderGroupHandlesNV = (PFN_vkGetRayTracingShaderGroupHandlesNV)
+		vkGetInstanceProcAddr(m_instance, "vkGetRayTracingShaderGroupHandlesNV");
+	evkCmdTraceRaysNV = (PFN_vkCmdTraceRaysNV)
+		vkGetInstanceProcAddr(m_instance, "vkCmdTraceRaysNV");
 }
 
 void BaseApplication::pick_gpu()
@@ -999,7 +1050,7 @@ void BaseApplication::create_swapchain()
 	ci.imageColorSpace = format.colorSpace;
 	ci.imageExtent = extent;
 	ci.imageArrayLayers = 1; // this is for stereo
-	ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
 	if (family_indices.graphics_family != family_indices.present_family) {
 		ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -1553,7 +1604,13 @@ void BaseApplication::load_model()
 	}
 
 	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
-
+#if 0
+	m_model_vertices.resize(3);
+	m_model_vertices[0].pos = glm::vec3(-1.0f, 0.0f, 0.0f);
+	m_model_vertices[1].pos = glm::vec3(1.0f, 0.0f, 0.0f);
+	m_model_vertices[2].pos = glm::vec3(0.0, -1.0f, 0.0f);
+	m_model_indices = { 0, 1, 2 };
+#else 
 	for (const auto &shape : shapes) {
 		for (const auto &index : shape.mesh.indices) {
 			Vertex vertex = {};
@@ -1584,6 +1641,7 @@ void BaseApplication::load_model()
 				m_model_vertices.size(),
 				m_model_indices.size());
 	}
+#endif
 }
 
 void BaseApplication::create_vertex_buffer()
@@ -2237,14 +2295,33 @@ void BaseApplication::create_rt_descriptor_sets()
 void BaseApplication::create_shader_binding_table()
 {
 	VkPhysicalDeviceRayTracingPropertiesNV props = vk_helpers::get_raytracing_properties(m_gpu);
+	
+	fprintf(stdout, "group handle size %u\n", props.shaderGroupHandleSize);
+	fprintf(stdout, "group base alignment %u\n", props.shaderGroupBaseAlignment);
+	fprintf(stdout, "group max stride %u\n", props.maxShaderGroupStride);
 
+	VkDeviceSize sz = 64 + 64 + 64;
+	VkDeviceSize stride = 64;
 
+	create_buffer(sz, VK_BUFFER_USAGE_RAY_TRACING_BIT_NV, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, m_rt_sbt, m_rt_sbt_memory);
 
-	//vkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, )
-	//vkGetRayTracingShaderGroupHandlesNV()
-	//props.shaderGroupHandleSize 
-	//vkGetRayTracingShaderGroupHandlesNV()
-	//create_buffer()
+	uint8_t *data;
+	auto res = vkMapMemory(m_device, m_rt_sbt_memory, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
+
+	if (props.shaderGroupHandleSize != sizeof(ShaderGroupHandle)) {
+		throw std::runtime_error("shadergroup handle size is different than 16 bytes");
+	}
+
+	ShaderGroupHandle handles[3];
+	evkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, 3, sizeof(ShaderGroupHandle) * 3, handles);
+	std::memcpy(data, &handles[0], sizeof(ShaderGroupHandle));
+	data += 64;
+	std::memcpy(data, &handles[1], sizeof(ShaderGroupHandle));
+	data += 64;
+	std::memcpy(data, &handles[2], sizeof(ShaderGroupHandle));
+
+	vkUnmapMemory(m_device, m_rt_sbt_memory);
 }
 
 VkFormat BaseApplication::find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const
@@ -2324,7 +2401,7 @@ void BaseApplication::create_command_buffers()
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to allocate command buffers");
 	}
-
+	
 	for (size_t i = 0; i < m_cmd_buffers.size(); ++i) {
 		VkCommandBufferBeginInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2346,7 +2423,7 @@ void BaseApplication::create_command_buffers()
 		rpbi.pClearValues = clear_values.data();
 
 		vkCmdBeginRenderPass(m_cmd_buffers[i], &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-		
+	
 		vkCmdBindPipeline(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 		
 		VkBuffer buffers[] = { m_vertex_buffer };
@@ -2364,7 +2441,75 @@ void BaseApplication::create_command_buffers()
 			throw std::runtime_error("failed to end recording commands");
 		}
 	}
+}
 
+void BaseApplication::create_rt_command_buffers()
+{
+	// the command buffers are the same number as the fbs;
+	m_rt_cmd_buffers.resize(m_swapchain_fbs.size());
+
+	VkCommandBufferAllocateInfo cbi = {};
+	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cbi.commandPool = m_graphics_cmd_pool;
+	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cbi.commandBufferCount = (uint32_t)m_rt_cmd_buffers.size();
+
+	auto res = vkAllocateCommandBuffers(m_device, &cbi, m_rt_cmd_buffers.data());
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to allocate command buffers");
+	}
+
+	for (size_t i = 0; i < m_rt_cmd_buffers.size(); ++i) {
+		VkCommandBufferBeginInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+		bi.pInheritanceInfo = nullptr;
+		res = vkBeginCommandBuffer(m_rt_cmd_buffers[i], &bi);
+		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
+
+		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img, isr,
+			0, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
+
+		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline);
+		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline_layout,
+			0, 1, &m_rt_desc_sets[i], 0, nullptr);
+		evkCmdTraceRaysNV(m_rt_cmd_buffers[i],
+			/*raygen sbt*/ m_rt_sbt, 0,
+			/*miss sbt*/   m_rt_sbt, 128, 64,
+			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
+
+
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
+			0, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img, isr,
+			VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		VkImageCopy cpy = {};
+		cpy.dstOffset = { 0, 0, 0 };
+		cpy.srcOffset = { 0, 0, 0 };
+		cpy.extent = { m_width, m_height, 1 };
+		cpy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		cpy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+
+		vkCmdCopyImage(m_rt_cmd_buffers[i],
+			m_rt_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
+			VK_ACCESS_TRANSFER_WRITE_BIT, 0,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+		res = vkEndCommandBuffer(m_rt_cmd_buffers[i]);
+		if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to end recording commands");
+		}
+	}
 }
 
 void BaseApplication::create_sync_objects()
@@ -2439,12 +2584,19 @@ void BaseApplication::draw_frame()
 	VkSubmitInfo si = {};
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	VkSemaphore wait_semaphores[] = { m_sem_img_available[m_current_frame_idx] };
-	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	
 	si.waitSemaphoreCount = 1;
 	si.pWaitSemaphores = wait_semaphores;
-	si.pWaitDstStageMask = wait_stages;
 	si.commandBufferCount = 1;
-	si.pCommandBuffers = &m_cmd_buffers[img_idx];
+	VkPipelineStageFlags wait_stages[1];
+	if (m_raytraced) {
+		wait_stages[0] = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		si.pCommandBuffers = &m_rt_cmd_buffers[img_idx];
+	} else {
+		wait_stages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		si.pCommandBuffers = &m_cmd_buffers[img_idx];
+	}
+	si.pWaitDstStageMask = wait_stages;
 	VkSemaphore signal_semaphores[] = { m_sem_render_finished[m_current_frame_idx] };
 	si.signalSemaphoreCount = 1;
 	si.pSignalSemaphores = signal_semaphores;
