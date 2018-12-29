@@ -1969,7 +1969,6 @@ void BaseApplication::create_top_acceleration_structure()
 									   m_top_as.scratch_buffer, 0);
 
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
-
 }
 
 void BaseApplication::create_raytracing_pipeline_layout()
@@ -1978,7 +1977,7 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_0.binding = 0;
 	lb_0.descriptorCount = 1;
 	lb_0.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
-	lb_0.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_0.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV | VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
 	lb_0.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_1 = {};
@@ -2130,7 +2129,7 @@ void BaseApplication::create_raytracing_pipeline()
 	ci.pStages = stages.data();
 	ci.groupCount = uint32_t(groups.size());
 	ci.pGroups = groups.data();
-	ci.maxRecursionDepth = 1;
+	ci.maxRecursionDepth = 2;
 	ci.layout = m_rt_pipeline_layout;
 	ci.basePipelineHandle = VK_NULL_HANDLE;
 	ci.basePipelineIndex = 0;
@@ -2425,6 +2424,7 @@ void BaseApplication::create_shader_binding_table()
 	fprintf(stdout, "group handle size %u\n", props.shaderGroupHandleSize);
 	fprintf(stdout, "group base alignment %u\n", props.shaderGroupBaseAlignment);
 	fprintf(stdout, "group max stride %u\n", props.maxShaderGroupStride);
+	fprintf(stdout, "max recursion depth %u\n", props.maxRecursionDepth);
 
 	VkDeviceSize sz = 64 + 64 + 64 + 64 + 64;
 	VkDeviceSize stride = 64;
@@ -2680,7 +2680,7 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
 
 	CameraMatrices ubo = {};
-	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(-10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(-25.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1;
@@ -2693,6 +2693,7 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	std::memcpy(data, &ubo, sizeof(CameraMatrices));
 	vkUnmapMemory(m_device, m_uni_buffer_memory[idx]);
 }
+
 
 void BaseApplication::draw_frame()
 {

@@ -1,14 +1,14 @@
 #version 460
 #extension GL_NV_ray_tracing : require
 
-struct ShadowInfo
+struct ShadowPayload
 {
-	float distance;
+	float dist;
 };
 
-layout(location = 1) rayPayloadInNV ShadowInfo shadow_payload;
+layout(location = 1) rayPayloadInNV ShadowPayload shadow_payload;
 
 void main()
 {
-	shadow_payload.distance = -1.0;
+	shadow_payload.dist = -1.0;
 }

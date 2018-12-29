@@ -12,24 +12,19 @@ layout(binding = 2) uniform CameraMatrices
 	mat4 iproj;
 } ubo;
 
-struct HitInfo
+struct HitPayload
 {
 	vec4 color_dist;
-	vec4 normal;
 };
 
-struct ShadowInfo
-{
-	float distance;
-};
 
 struct Attributes
 {
 	vec2 bary;
 };
 
-layout(location = 0) rayPayloadNV HitInfo payload;
-layout(location = 1) rayPayloadNV ShadowInfo shadow_payload;
+layout(location = 0) rayPayloadNV HitPayload payload;
+
 
 void main()
 {
@@ -40,11 +35,9 @@ void main()
 	vec3 origin = (ubo.iview * vec4(0, 0, 0, 1.0)).xyz;
 	vec4 target = ubo.iproj * vec4(d.x, d.y, 1.0, 1.0);
 	vec3 dir = (ubo.iview * vec4(target.xyz, 0.0)).xyz;
-	//vec3 origin = vec3(d.x, -d.y, 1.0);
-	//vec3 dir = vec3(0.0, 0.0, -1.0);
 
 	const uint ray_flags = gl_RayFlagsOpaqueNV;
-	const uint shadow_ray_flags = gl_RayFlagsOpaqueNV | gl_RayFlagsTerminateOnFirstHitNV;
+	
 
 	vec3 final_color = vec3(0.0);
 
@@ -53,22 +46,6 @@ void main()
 	const vec3 color = payload.color_dist.xyz;
 	const float hdist = payload.color_dist.w;
 
-	if (hdist < 0.0) {
-		final_color = color;
-	} else {
-		const vec3 hit_normal = payload.normal.xyz;
-		const vec3 hit_pos = origin + dir *  hdist;
-		const vec3 to_light = normalize(vec3(-10.0, 10.0, 10.0));
-		const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
-
-		traceNV(scene, shadow_ray_flags, 0xFF, 1, 1, 1, shadow_ray_orig, 0.0, to_light, 1000.0, 1);
-	
-		const float ambient = 0.1;
-		const float lighting = (shadow_payload.distance > 0.0f) ? ambient : max(ambient, dot(hit_normal, to_light));
-		final_color = lighting * color;
-		//final_color = color;
-	}
-
-	imageStore(result, ivec2(gl_LaunchIDNV.xy), vec4(final_color, 1.0));
+	imageStore(result, ivec2(gl_LaunchIDNV.xy), vec4(color, 1.0));
 }
 
