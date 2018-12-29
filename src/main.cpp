@@ -26,6 +26,7 @@
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
 #include "stb_image.h"
+#include "orbit_camera.h"
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 #define ENABLE_VALIDATION_LAYERS
@@ -164,6 +165,7 @@ public:
 	void run();
 	void set_window_resized() { m_window_resized = true; }
 	void toggle_raytracing() { m_raytraced = !m_raytraced; }
+	OrbitCamera &camera() { return m_camera; }
 
 private:
 	void init_window();
@@ -259,6 +261,7 @@ private:
 	uint32_t m_width{ 1024 };
 	uint32_t m_height{ 768 };
 	bool m_raytraced{ false };
+	OrbitCamera m_camera;
 
 	std::vector<const char*> m_validation_layers;
 	bool m_enable_validation_layers;
@@ -360,10 +363,42 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action, 
 	}
 }
 
+static void mouse_buttom_callback(GLFWwindow *window, int button, int action, int mods)
+{
+	if (action == GLFW_PRESS) {
+		auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
+		double xpos, ypos;
+		glfwGetCursorPos(window, &xpos, &ypos);
+		app->camera().set_mouse_position(-xpos, -ypos);
+	}
+}
+
+static void mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
+{
+	MouseState ms;
+	ms.left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+	ms.right = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;;
+	ms.middle = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;;
+
+	if (!ms.left && !ms.right && !ms.middle) return;
+
+	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
+	app->camera().mouse_move(-xpos, -ypos, ms);
+}
+
+
+static void mouse_scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
+{
+	(void)xoffset; // unused
+	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
+	app->camera().mouse_scroll(yoffset);
+}
+
 static void framebuffer_resize_callback(GLFWwindow *window, int width, int height)
 {
 	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
 	app->set_window_resized();
+	app->camera().set_window_size(width, height);
 }
 
 namespace vk_helpers
@@ -486,7 +521,17 @@ void BaseApplication::init_window()
 
 	glfwSetKeyCallback(m_window, key_callback);
 	glfwSetFramebufferSizeCallback(m_window, framebuffer_resize_callback);
+	glfwSetMouseButtonCallback(m_window, mouse_buttom_callback);
+	glfwSetCursorPosCallback(m_window, mouse_move_callback);
+	glfwSetScrollCallback(m_window, mouse_scroll_callback);
 	glfwSetWindowUserPointer(m_window, this);
+
+	m_camera.set_window_size(m_width, m_height);
+	m_camera.set_look_at(
+		glm::vec3(2.0f, 2.0f, 2.0f),
+		glm::vec3(0.0f, 0.0f, 0.0f),
+		glm::vec3(0.0f, 0.0f, 1.0f)
+	);
 }
 
 void BaseApplication::init_vulkan()
@@ -2667,8 +2712,10 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
 
 	CameraMatrices ubo = {};
-	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(-25.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	//ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(-25.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	ubo.model = glm::mat4(1.0);
+	//ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	ubo.view = m_camera.get_view_matrix();
 	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1;
 	ubo.iview = glm::inverse(ubo.view * ubo.model);

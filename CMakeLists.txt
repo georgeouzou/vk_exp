@@ -11,6 +11,7 @@ set(src
 	src/main.cpp 
 	src/stb_image.c
 	src/tiny_obj_loader.cpp
+	src/orbit_camera.cpp
 )
 
 add_executable(${app} ${src})
