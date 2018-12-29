@@ -12,6 +12,7 @@
 #include <chrono>
 #include <unordered_map>
 
+#include <volk.h>
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
 #define GLM_ENABLE_EXPERIMENTAL
@@ -21,7 +22,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-#define GLFW_INCLUDE_VULKAN
+#define VK_NO_PROTOTYPES
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
 #include "stb_image.h"
@@ -45,16 +46,6 @@ struct ShaderGroupHandle
 	uint64_t i1;
 };
 
-
-static PFN_vkCreateAccelerationStructureNV evkCreateAccelerationStructureNV;
-static PFN_vkDestroyAccelerationStructureNV evkDestroyAccelerationStructureNV;
-static PFN_vkGetAccelerationStructureMemoryRequirementsNV evkGetAccelerationStructureMemoryRequirementsNV;
-static PFN_vkBindAccelerationStructureMemoryNV evkBindAccelerationStructureMemoryNV;
-static PFN_vkCmdBuildAccelerationStructureNV evkCmdBuildAccelerationStructureNV;
-static PFN_vkGetAccelerationStructureHandleNV evkGetAccelerationStructureHandleNV;
-static PFN_vkCreateRayTracingPipelinesNV evkCreateRayTracingPipelinesNV;
-static PFN_vkGetRayTracingShaderGroupHandlesNV evkGetRayTracingShaderGroupHandlesNV;
-static PFN_vkCmdTraceRaysNV evkCmdTraceRaysNV;
 
 struct QueueFamilyIndices
 {
@@ -155,7 +146,7 @@ struct ASBuffers
 
 	void destroy(VkDevice device)
 	{
-		if (structure) evkDestroyAccelerationStructureNV(device, structure, nullptr);
+		if (structure) vkDestroyAccelerationStructureNV(device, structure, nullptr);
 		vkDestroyBuffer(device, scratch_buffer, nullptr);
 		vkDestroyBuffer(device, instances, nullptr);
 		vkFreeMemory(device, memory, nullptr);
@@ -186,7 +177,6 @@ private:
 
 	void setup_debug_callback();
 	void destroy_debug_callback();
-	void setup_raytracing_device_functions();
 
 	void pick_gpu();
 	bool check_device_extension_support(VkPhysicalDevice gpu) const;
@@ -501,11 +491,15 @@ void BaseApplication::init_window()
 
 void BaseApplication::init_vulkan()
 {
+	auto res = volkInitialize();
+	if (res != VK_SUCCESS) throw std::runtime_error("could not initialize volk");
+
 	create_instance();
+	volkLoadInstance(m_instance);
+
 	if (m_enable_validation_layers) {
 		setup_debug_callback();
 	}
-	setup_raytracing_device_functions();
 
 	create_surface();
 
@@ -763,13 +757,7 @@ void BaseApplication::setup_debug_callback()
 	ci.pfnUserCallback = debug_callback;
 	ci.pUserData = nullptr;
 
-	auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-		m_instance, "vkCreateDebugUtilsMessengerEXT");
-	if (func == nullptr) {
-		throw std::runtime_error("debug messages are not supported");
-		return;
-	}
-	auto res = func(m_instance, &ci, nullptr, &m_debug_callback);
+	auto res = vkCreateDebugUtilsMessengerEXT(m_instance, &ci, nullptr, &m_debug_callback);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to setup debug callback");
 	}
@@ -778,31 +766,7 @@ void BaseApplication::setup_debug_callback()
 void BaseApplication::destroy_debug_callback()
 {
 	if (!m_debug_callback) return;
-	auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-		m_instance, "vkDestroyDebugUtilsMessengerEXT");
-	if (func) func(m_instance, m_debug_callback, nullptr);
-}
-
-void BaseApplication::setup_raytracing_device_functions()
-{
-	evkCreateAccelerationStructureNV = (PFN_vkCreateAccelerationStructureNV)
-		vkGetInstanceProcAddr(m_instance, "vkCreateAccelerationStructureNV");
-	evkDestroyAccelerationStructureNV = (PFN_vkDestroyAccelerationStructureNV)
-		vkGetInstanceProcAddr(m_instance, "vkDestroyAccelerationStructureNV");
-	evkGetAccelerationStructureMemoryRequirementsNV = (PFN_vkGetAccelerationStructureMemoryRequirementsNV)
-		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureMemoryRequirementsNV");
-	evkBindAccelerationStructureMemoryNV = (PFN_vkBindAccelerationStructureMemoryNV)
-		vkGetInstanceProcAddr(m_instance, "vkBindAccelerationStructureMemoryNV");
-	evkCmdBuildAccelerationStructureNV = (PFN_vkCmdBuildAccelerationStructureNV)
-		vkGetInstanceProcAddr(m_instance, "vkCmdBuildAccelerationStructureNV");
-	evkGetAccelerationStructureHandleNV = (PFN_vkGetAccelerationStructureHandleNV)
-		vkGetInstanceProcAddr(m_instance, "vkGetAccelerationStructureHandleNV");
-	evkCreateRayTracingPipelinesNV = (PFN_vkCreateRayTracingPipelinesNV)
-		vkGetInstanceProcAddr(m_instance, "vkCreateRayTracingPipelinesNV");
-	evkGetRayTracingShaderGroupHandlesNV = (PFN_vkGetRayTracingShaderGroupHandlesNV)
-		vkGetInstanceProcAddr(m_instance, "vkGetRayTracingShaderGroupHandlesNV");
-	evkCmdTraceRaysNV = (PFN_vkCmdTraceRaysNV)
-		vkGetInstanceProcAddr(m_instance, "vkCmdTraceRaysNV");
+	vkDestroyDebugUtilsMessengerEXT(m_instance, m_debug_callback, nullptr);
 }
 
 void BaseApplication::pick_gpu()
@@ -1759,7 +1723,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
 	ci.info = si;
 
-	auto res = evkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_bottom_as.structure);
+	auto res = vkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_bottom_as.structure);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
 	
 	// allocate scratch
@@ -1770,7 +1734,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
 		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
 		ri.accelerationStructure = m_bottom_as.structure;
-		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
 	
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1793,7 +1757,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 
 		res = vkBindBufferMemory(m_device, m_bottom_as.scratch_buffer, m_bottom_as.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
-		fprintf(stdout, "BOTTOM AS: needed scratch memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "BOTTOM AS: needed scratch memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	// allocate scratch
@@ -1804,7 +1768,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
 		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
 		ri.accelerationStructure = m_bottom_as.structure;
-		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
 		
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1821,14 +1785,14 @@ void BaseApplication::create_bottom_acceleration_structure()
 		bi.memoryOffset = 0;
 		bi.deviceIndexCount = 0;
 
-		res = evkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
-		fprintf(stdout, "BOTTOM AS: needed structure memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "BOTTOM AS: needed structure memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
 	
-	evkCmdBuildAccelerationStructureNV(cmd_buf, &si, VK_NULL_HANDLE, 0,
+	vkCmdBuildAccelerationStructureNV(cmd_buf, &si, VK_NULL_HANDLE, 0,
 									  VK_FALSE, m_bottom_as.structure, VK_NULL_HANDLE,
 									  m_bottom_as.scratch_buffer, 0);
 
@@ -1852,7 +1816,7 @@ void BaseApplication::create_top_acceleration_structure()
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
 	ci.info = si;
 
-	auto res = evkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_top_as.structure);
+	auto res = vkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_top_as.structure);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
 
 	// allocate scratch
@@ -1863,7 +1827,7 @@ void BaseApplication::create_top_acceleration_structure()
 		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
 		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
 		ri.accelerationStructure = m_top_as.structure;
-		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
 
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1886,7 +1850,7 @@ void BaseApplication::create_top_acceleration_structure()
 
 		res = vkBindBufferMemory(m_device, m_top_as.scratch_buffer, m_top_as.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
-		fprintf(stdout, "TOP AS: needed scratch memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "TOP AS: needed scratch memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	// allocate scratch
@@ -1897,7 +1861,7 @@ void BaseApplication::create_top_acceleration_structure()
 		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
 		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
 		ri.accelerationStructure = m_top_as.structure;
-		evkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
 
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1914,9 +1878,9 @@ void BaseApplication::create_top_acceleration_structure()
 		bi.memoryOffset = 0;
 		bi.deviceIndexCount = 0;
 
-		res = evkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
-		fprintf(stdout, "TOP AS: needed structure memory %lu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "TOP AS: needed structure memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	// configure instances
@@ -1945,7 +1909,7 @@ void BaseApplication::create_top_acceleration_structure()
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
 
 		uint64_t bottom_as_gpu_handle;
-		res = evkGetAccelerationStructureHandleNV(m_device, m_bottom_as.structure, sizeof(uint64_t), &bottom_as_gpu_handle);
+		res = vkGetAccelerationStructureHandleNV(m_device, m_bottom_as.structure, sizeof(uint64_t), &bottom_as_gpu_handle);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to get acceleration structure gpu handle");
 
 		VkGeometryInstanceNV *instance_ptr;
@@ -1964,7 +1928,7 @@ void BaseApplication::create_top_acceleration_structure()
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
 
-	evkCmdBuildAccelerationStructureNV(cmd_buf, &si, m_top_as.instances, 0,
+	vkCmdBuildAccelerationStructureNV(cmd_buf, &si, m_top_as.instances, 0,
 									   VK_FALSE, m_top_as.structure, VK_NULL_HANDLE,
 									   m_top_as.scratch_buffer, 0);
 
@@ -2134,7 +2098,7 @@ void BaseApplication::create_raytracing_pipeline()
 	ci.basePipelineHandle = VK_NULL_HANDLE;
 	ci.basePipelineIndex = 0;
 	
-	auto res = evkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
+	auto res = vkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create a raytracing pipeline");
 
 	vkDestroyShaderModule(m_device, raygen_module, nullptr);
@@ -2440,7 +2404,7 @@ void BaseApplication::create_shader_binding_table()
 	}
 
 	ShaderGroupHandle handles[5];
-	evkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, 5, sizeof(ShaderGroupHandle) * 5, handles);
+	vkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, 5, sizeof(ShaderGroupHandle) * 5, handles);
 	std::memcpy(data, &handles[0], sizeof(ShaderGroupHandle));
 	data += 64;
 	std::memcpy(data, &handles[1], sizeof(ShaderGroupHandle));
@@ -2606,7 +2570,7 @@ void BaseApplication::create_rt_command_buffers()
 		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline);
 		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline_layout,
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
-		evkCmdTraceRaysNV(m_rt_cmd_buffers[i],
+		vkCmdTraceRaysNV(m_rt_cmd_buffers[i],
 			/*raygen sbt*/ m_rt_sbt, 0,
 			/*miss sbt*/   m_rt_sbt, 192, 64,
 			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);

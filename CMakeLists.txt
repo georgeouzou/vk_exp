@@ -36,13 +36,19 @@ target_include_directories(${app} PRIVATE ${GLM_DIR})
 set(TINYOBJLOADER "${EXTERN_DIR}/tinyobjloader")
 target_include_directories(${app} PRIVATE ${TINYOBJLOADER})
 
+# volk
+set(VOLK "${EXTERN_DIR}/volk")
+add_subdirectory(${VOLK})
+target_include_directories(${app} PRIVATE ${VOLK})
+target_link_libraries(${app} volk)
+
 # vulkan
 
 find_package(Vulkan)
 if (NOT Vulkan_FOUND)
 	message(FATAL_ERROR "Could not find vulkan library!")
 endif()
-target_link_libraries(${app} ${Vulkan_LIBRARIES})
+#target_link_libraries(${app} ${Vulkan_LIBRARIES})
 target_include_directories(${app} PRIVATE ${Vulkan_INCLUDE_DIRS})
 
 if (WIN32)

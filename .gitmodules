@@ -7,3 +7,6 @@
 [submodule "extern/tinyobjloader"]
 	path = extern/tinyobjloader
 	url = https://github.com/syoyo/tinyobjloader.git
+[submodule "extern\\volk"]
+	path = extern\\volk
+	url = https://github.com/zeux/volk.git
