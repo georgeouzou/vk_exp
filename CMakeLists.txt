@@ -91,20 +91,24 @@ add_custom_target(
 
 add_dependencies(${app} Shaders)
 
+# models
+
+set(MODELS "${CMAKE_CURRENT_SOURCE_DIR}/models")
+
 # download resources
 
-set(DOWNLOADABLES "${PROJECT_BINARY_DIR}/downloadables/")
-file(MAKE_DIRECTORY ${DOWNLOADABLES})
+#set(DOWNLOADABLES "${PROJECT_BINARY_DIR}/downloadables/")
+#file(MAKE_DIRECTORY ${DOWNLOADABLES})
 
-if (NOT EXISTS "${DOWNLOADABLES}/chalet.obj")
-	MESSAGE(STATUS "Downloading model resources")
-	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.obj.zip "${DOWNLOADABLES}/chalet.obj.zip"  SHOW_PROGRESS)
-	execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${DOWNLOADABLES}/chalet.obj.zip WORKING_DIRECTORY ${DOWNLOADABLES})
-	file(REMOVE ${DOWNLOADABLES}/chalet.obj.zip)
-endif()
-if (NOT EXISTS "${DOWNLOADABLES}/chalet.jpg")
-	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.jpg "${DOWNLOADABLES}/chalet.jpg"  SHOW_PROGRESS)
-endif()
+#if (NOT EXISTS "${DOWNLOADABLES}/chalet.obj")
+#	MESSAGE(STATUS "Downloading model resources")
+#	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.obj.zip "${DOWNLOADABLES}/chalet.obj.zip"  SHOW_PROGRESS)
+#	execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${DOWNLOADABLES}/chalet.obj.zip WORKING_DIRECTORY ${DOWNLOADABLES})
+#	file(REMOVE ${DOWNLOADABLES}/chalet.obj.zip)
+#endif()
+#if (NOT EXISTS "${DOWNLOADABLES}/chalet.jpg")
+#	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.jpg "${DOWNLOADABLES}/chalet.jpg"  SHOW_PROGRESS)
+#endif()
 
 # copy shaders to executable
 
@@ -115,11 +119,11 @@ add_custom_command(TARGET ${app} POST_BUILD
 		"$<TARGET_FILE_DIR:${app}>/resources"
 )
 
-# copy images to executable
+# copy models to executable
 
 add_custom_command(TARGET ${app} POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory 
-		${DOWNLOADABLES}
+		${MODELS}
 		"$<TARGET_FILE_DIR:${app}>/resources"
 )

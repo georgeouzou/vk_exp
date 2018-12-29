@@ -59,8 +59,7 @@ void main()
 	const vec3 hit_normal = norm;
 	const vec3 hit_pos = gl_WorldRayOriginNV + gl_HitTNV * gl_WorldRayDirectionNV;
 	const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
-	const vec3 to_light1 = normalize(vec3(-10.0, 10.0, 10.0));
-	const vec3 to_light2 = normalize(vec3(20.0, 10.0, 20.0));
+	const vec3 to_light1 = normalize(vec3(10.0, 10.0, 10.0));
 
 	const uint shadow_ray_flags = gl_RayFlagsOpaqueNV | gl_RayFlagsTerminateOnFirstHitNV;
 	traceNV(scene, shadow_ray_flags, 0xFF, 1, 1, 1, shadow_ray_orig, 0.0, to_light1, 1000.0, 1);
@@ -68,10 +67,8 @@ void main()
 	const float ambient = 0.1;
 	const float lighting1 = (shadow_payload.dist > 0.0) ? ambient : max(ambient, dot(hit_normal, to_light1));
 
-	traceNV(scene, shadow_ray_flags, 0xFF, 1, 1, 1, shadow_ray_orig, 0.0, to_light2, 1000.0, 1);
-	const float lighting2 = (shadow_payload.dist > 0.0) ? ambient : max(ambient, dot(hit_normal, to_light2));
 
-	vec3 out_color = lighting1 * hit_color + lighting2 * hit_color;
+	vec3 out_color = lighting1 * hit_color;
 
 	payload.color_dist = vec4(out_color, gl_HitTNV);
 }

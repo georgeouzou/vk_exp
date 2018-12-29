@@ -1568,9 +1568,32 @@ void BaseApplication::load_model()
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
 	std::string warn, err;
-	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/chalet.obj")) {
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/pythagoras.obj")) {
 		throw std::runtime_error(warn + err);
 	}
+
+	glm::vec3 centroid = glm::vec3(0.0f, 0.0f, 0.0f);
+	glm::vec3 max_coord(std::numeric_limits<float>::min());
+	glm::vec3 min_coord(std::numeric_limits<float>::max());;
+
+	size_t count_verts = attrib.vertices.size() / 3;
+	for (size_t i = 0; i < count_verts; ++i) {
+		float x = attrib.vertices[3 * i + 0];
+		float y = attrib.vertices[3 * i + 1];
+		float z = attrib.vertices[3 * i + 2];
+		centroid.x += x / count_verts;
+		centroid.y += y / count_verts;
+		centroid.z += z / count_verts;
+		if (x > max_coord.x) max_coord.x = x;
+		if (y > max_coord.y) max_coord.y = y;
+		if (z > max_coord.z) max_coord.z = z;
+		if (x < min_coord.x) min_coord.x = x;
+		if (y < min_coord.y) min_coord.y = y;
+		if (z < min_coord.z) min_coord.z = z;
+	}
+
+	glm::vec3 diff = max_coord - min_coord;
+	float scale = std::min(diff.x, std::min(diff.y, diff.z)) ;
 
 	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
 #if 0
@@ -1589,9 +1612,9 @@ void BaseApplication::load_model()
 		for (const auto &index : shape.mesh.indices) {
 			Vertex vertex = {};
 			vertex.pos = {
-				attrib.vertices[3 * index.vertex_index + 0],
-				attrib.vertices[3 * index.vertex_index + 1],
-				attrib.vertices[3 * index.vertex_index + 2]
+				(attrib.vertices[3 * index.vertex_index + 0] - centroid.x)/ scale,
+				(attrib.vertices[3 * index.vertex_index + 1] - centroid.y)/ scale,
+				(attrib.vertices[3 * index.vertex_index + 2] - centroid.z)/ scale
 			};
 			vertex.tex_coord = {
 				attrib.texcoords[2 * index.texcoord_index + 0],
@@ -2109,7 +2132,7 @@ void BaseApplication::create_raytracing_pipeline()
 void BaseApplication::create_texture_image()
 {
 	int tex_width, tex_height, tex_channels;
-	stbi_uc *pixels = stbi_load("resources/chalet.jpg", 
+	stbi_uc *pixels = stbi_load("resources/pythagoras.jpg", 
 			&tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
 	if (!pixels) {
 		throw std::runtime_error("failed to load texture");
