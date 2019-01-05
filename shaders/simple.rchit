@@ -20,6 +20,16 @@ struct TriVertex
 
 layout(binding = 0) uniform accelerationStructureNV scene;
 
+layout(binding = 2) uniform GlobalUniforms
+{
+	mat4 model;
+	mat4 view;
+	mat4 proj;
+	mat4 iview;
+	mat4 iproj;
+	vec4 light_pos;
+} ubo;
+
 layout(std430, binding = 3) readonly buffer TriVertices
 {
 	TriVertex vertices[];
@@ -53,13 +63,14 @@ void main()
 	vec3 norm = vertices[vidx0].normal.xyz * barys.x +
 				vertices[vidx1].normal.xyz * barys.y +
 				vertices[vidx2].normal.xyz * barys.z;
+	norm = normalize(norm);
 	
 	vec3 hit_color = texture(tex_sampler, texc).bgr;
 
 	const vec3 hit_normal = norm;
 	const vec3 hit_pos = gl_WorldRayOriginNV + gl_HitTNV * gl_WorldRayDirectionNV;
 	const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
-	const vec3 to_light1 = normalize(vec3(10.0, 10.0, 10.0));
+	const vec3 to_light1 = normalize(ubo.light_pos.xyz);
 
 	const uint shadow_ray_flags = gl_RayFlagsOpaqueNV | gl_RayFlagsTerminateOnFirstHitNV;
 	traceNV(scene, shadow_ray_flags, 0xFF, 1, 1, 1, shadow_ray_orig, 0.0, to_light1, 1000.0, 1);

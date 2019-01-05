@@ -11,6 +11,7 @@
 #include <array>
 #include <chrono>
 #include <unordered_map>
+#include <random>
 
 #include <volk.h>
 #define GLM_FORCE_RADIANS
@@ -46,7 +47,6 @@ struct ShaderGroupHandle
 	uint64_t i0;
 	uint64_t i1;
 };
-
 
 struct QueueFamilyIndices
 {
@@ -126,14 +126,31 @@ namespace std
 	};
 }
 
+enum Material
+{
+	MATERIAL_LAMBERTIAN,
+	MATERIAL_METAL
+};
 
-struct CameraMatrices
+struct SpherePrimitive
+{
+	glm::vec4 center;
+	glm::vec4 albedo;
+	int32_t material;
+	float fuzz;
+	float radius;
+	float pad;
+};
+
+struct GlobalUniforms
 {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
 	glm::mat4 iview;
 	glm::mat4 iproj;
+
+	glm::vec4 light_pos;
 };
 
 struct ASBuffers
@@ -220,12 +237,16 @@ private:
 	void copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_t width, uint32_t height);
 
 	void load_model();
+	void create_spheres();
 
 	void create_vertex_buffer();
 	void create_index_buffer();
 	void create_uniform_buffers();
 
+	void create_sphere_buffer();
+
 	void create_bottom_acceleration_structure();
+	void create_bottom_acceleration_structure_spheres();
 	void create_top_acceleration_structure();
 	void create_raytracing_pipeline_layout();
 	void create_raytracing_pipeline();
@@ -303,12 +324,16 @@ private:
 	
 	std::vector<Vertex> m_model_vertices;
 	std::vector<uint32_t> m_model_indices;
+	std::vector<SpherePrimitive> m_sphere_primitives;
 
 	VkBuffer m_vertex_buffer{ VK_NULL_HANDLE };
 	VkDeviceMemory m_vertex_buffer_memory{ VK_NULL_HANDLE };
 	VkBuffer m_index_buffer{ VK_NULL_HANDLE };
 	VkDeviceMemory m_index_buffer_memory{ VK_NULL_HANDLE };
+	VkBuffer m_sphere_buffer{ VK_NULL_HANDLE };
+	VkDeviceMemory m_sphere_buffer_memory{ VK_NULL_HANDLE };
 
+	ASBuffers m_bottom_as_spheres;
 	ASBuffers m_bottom_as;
 	ASBuffers m_top_as;
 	VkImage m_rt_img{ VK_NULL_HANDLE };
@@ -369,7 +394,7 @@ static void mouse_buttom_callback(GLFWwindow *window, int button, int action, in
 		auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
 		double xpos, ypos;
 		glfwGetCursorPos(window, &xpos, &ypos);
-		app->camera().set_mouse_position(-xpos, -ypos);
+		app->camera().set_mouse_position(-int(xpos), -int(ypos));
 	}
 }
 
@@ -383,7 +408,7 @@ static void mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
 	if (!ms.left && !ms.right && !ms.middle) return;
 
 	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
-	app->camera().mouse_move(-xpos, -ypos, ms);
+	app->camera().mouse_move(-int(xpos), -int(ypos), ms);
 }
 
 
@@ -391,7 +416,7 @@ static void mouse_scroll_callback(GLFWwindow* window, double xoffset, double yof
 {
 	(void)xoffset; // unused
 	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
-	app->camera().mouse_scroll(yoffset);
+	app->camera().mouse_scroll(float(yoffset));
 }
 
 static void framebuffer_resize_callback(GLFWwindow *window, int width, int height)
@@ -1684,11 +1709,29 @@ void BaseApplication::load_model()
 		
 #endif
 		}
-		fprintf(stdout, "Loaded model: num vertices %lu, num indices %lu\n", 
+		fprintf(stdout, "Loaded model: num vertices %llu, num indices %llu\n", 
 				m_model_vertices.size(),
 				m_model_indices.size());
 	}
 #endif
+}
+
+void BaseApplication::create_spheres()
+{
+	std::random_device rd;
+	std::mt19937 engine(rd());
+	std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+	auto rgen = [&]() {return dist(engine); };
+
+	for (int a = -11; a < 11; ++a) {
+		for (int b = -11; b < 11; ++b) {
+			SpherePrimitive sphere = {};
+			float chose_mat = rgen();
+			sphere.center = glm::vec4(a + 0.9f*rgen(), 0.2f, 0.9f*rgen(), 1.0f);
+			m_sphere_primitives.push_back(sphere);
+		}
+	}
 }
 
 void BaseApplication::create_vertex_buffer()
@@ -1717,7 +1760,6 @@ void BaseApplication::create_vertex_buffer()
 
 void BaseApplication::create_index_buffer()
 {
-	
 	VkDeviceSize bufsize = sizeof(uint32_t) * m_model_indices.size();
 	VkBuffer staging_buf;
 	VkDeviceMemory staging_mem;
@@ -1741,7 +1783,7 @@ void BaseApplication::create_index_buffer()
 
 void BaseApplication::create_uniform_buffers()
 {
-	VkDeviceSize bufsize = sizeof(CameraMatrices);
+	VkDeviceSize bufsize = sizeof(GlobalUniforms);
 	m_uni_buffers.resize(m_swapchain_images.size());
 	m_uni_buffer_memory.resize(m_swapchain_images.size());
 
@@ -1750,6 +1792,10 @@ void BaseApplication::create_uniform_buffers()
 					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 					  m_uni_buffers[i], m_uni_buffer_memory[i]);
 	}
+}
+
+void BaseApplication::create_sphere_buffer()
+{
 }
 
 void BaseApplication::create_bottom_acceleration_structure()
@@ -1825,7 +1871,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 
 		res = vkBindBufferMemory(m_device, m_bottom_as.scratch_buffer, m_bottom_as.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
-		fprintf(stdout, "BOTTOM AS: needed scratch memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "BOTTOM AS: needed scratch memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	// allocate scratch
@@ -1855,7 +1901,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 
 		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
-		fprintf(stdout, "BOTTOM AS: needed structure memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "BOTTOM AS: needed structure memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
@@ -1865,6 +1911,10 @@ void BaseApplication::create_bottom_acceleration_structure()
 									  m_bottom_as.scratch_buffer, 0);
 
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+}
+
+void BaseApplication::create_bottom_acceleration_structure_spheres()
+{
 }
 
 void BaseApplication::create_top_acceleration_structure()
@@ -1918,7 +1968,7 @@ void BaseApplication::create_top_acceleration_structure()
 
 		res = vkBindBufferMemory(m_device, m_top_as.scratch_buffer, m_top_as.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
-		fprintf(stdout, "TOP AS: needed scratch memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "TOP AS: needed scratch memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	// allocate scratch
@@ -1948,7 +1998,7 @@ void BaseApplication::create_top_acceleration_structure()
 
 		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
-		fprintf(stdout, "TOP AS: needed structure memory %u MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "TOP AS: needed structure memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	// configure instances
@@ -2023,7 +2073,7 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_2.binding = 2;
 	lb_2.descriptorCount = 1;
 	lb_2.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	lb_2.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_2.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV | VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
 	lb_2.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_3 = {};
@@ -2321,7 +2371,7 @@ void BaseApplication::create_descriptor_sets()
 		VkDescriptorBufferInfo bi = {};
 		bi.buffer = m_uni_buffers[i];
 		bi.offset = 0;
-		bi.range = sizeof(CameraMatrices);
+		bi.range = sizeof(GlobalUniforms);
 		VkDescriptorImageInfo ii = {};
 		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		ii.imageView = m_texture_img_view;
@@ -2377,7 +2427,7 @@ void BaseApplication::create_rt_descriptor_sets()
 		VkDescriptorBufferInfo ubi = {};
 		ubi.buffer = m_uni_buffers[i];
 		ubi.offset = 0;
-		ubi.range = sizeof(CameraMatrices);
+		ubi.range = sizeof(GlobalUniforms);
 
 		VkDescriptorBufferInfo vbi = {};
 		vbi.buffer = m_vertex_buffer;
@@ -2711,8 +2761,8 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	auto curr_time = std::chrono::high_resolution_clock::now();
 	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
 
-	CameraMatrices ubo = {};
-	//ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(-25.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	GlobalUniforms ubo = {};
+	//ubo.model = glm::rotate(glm::mat4(1.0f), , glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.model = glm::mat4(1.0);
 	//ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.view = m_camera.get_view_matrix();
@@ -2720,14 +2770,15 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.proj[1][1] *= -1;
 	ubo.iview = glm::inverse(ubo.view * ubo.model);
 	ubo.iproj = glm::inverse(ubo.proj);
+	
+	ubo.light_pos = glm::vec4(10.0f * std::cos(time), 10 * std::sin(time), 0.0f, 1.0f);
 
 	void *data;
-	auto res = vkMapMemory(m_device, m_uni_buffer_memory[idx], 0, sizeof(CameraMatrices), 0, &data);
+	auto res = vkMapMemory(m_device, m_uni_buffer_memory[idx], 0, sizeof(GlobalUniforms), 0, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map uniform buffer memory");
-	std::memcpy(data, &ubo, sizeof(CameraMatrices));
+	std::memcpy(data, &ubo, sizeof(GlobalUniforms));
 	vkUnmapMemory(m_device, m_uni_buffer_memory[idx]);
 }
-
 
 void BaseApplication::draw_frame()
 {

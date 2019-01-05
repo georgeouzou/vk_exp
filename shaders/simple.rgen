@@ -3,13 +3,14 @@
 
 layout(binding = 0) uniform accelerationStructureNV scene;
 layout(binding = 1, rgba8) uniform image2D result;
-layout(binding = 2) uniform CameraMatrices 
+layout(binding = 2) uniform GlobalUniforms
 {
 	mat4 model;
 	mat4 view;
 	mat4 proj;
 	mat4 iview;
 	mat4 iproj;
+	vec4 light_pos;
 } ubo;
 
 struct HitPayload
