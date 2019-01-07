@@ -134,13 +134,14 @@ enum Material
 
 struct SpherePrimitive
 {
-	glm::vec4 center;
 	glm::vec4 albedo;
+	glm::vec3 aabb_min;
+	glm::vec3 aabb_max;
 	int32_t material;
 	float fuzz;
-	float radius;
-	float pad;
 };
+
+static_assert(sizeof(SpherePrimitive) % 8 == 0);
 
 struct GlobalUniforms
 {
@@ -601,7 +602,11 @@ void BaseApplication::init_vulkan()
 	create_texture_image_view();
 	create_texture_sampler();
 
+	create_spheres();
+	create_sphere_buffer();
+
 	create_bottom_acceleration_structure();
+	create_bottom_acceleration_structure_spheres();
 	create_top_acceleration_structure();
 
 	create_descriptor_pool();
@@ -711,6 +716,12 @@ void BaseApplication::cleanup()
 		vkDestroyPipeline(m_device, m_rt_pipeline, nullptr);
 		m_top_as.destroy(m_device);
 		m_bottom_as.destroy(m_device);
+		m_bottom_as_spheres.destroy(m_device);
+	}
+
+	if (m_device) {
+		vkDestroyBuffer(m_device, m_sphere_buffer, nullptr);
+		vkFreeMemory(m_device, m_sphere_buffer_memory, nullptr);
 	}
 
 	if (m_device) {
@@ -1723,15 +1734,27 @@ void BaseApplication::create_spheres()
 	std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
 	auto rgen = [&]() {return dist(engine); };
-
-	for (int a = -11; a < 11; ++a) {
-		for (int b = -11; b < 11; ++b) {
+	const float scale = 0.3f;
+#if 1
+	for (int a = -10; a < 10; ++a) {
+		for (int b = -10; b < 10; ++b) {
 			SpherePrimitive sphere = {};
-			float chose_mat = rgen();
-			sphere.center = glm::vec4(a + 0.9f*rgen(), 0.2f, 0.9f*rgen(), 1.0f);
+			glm::vec3 center = glm::vec3(scale*a + scale *rgen(), scale*b + scale*rgen(), -0.6f);
+			float radius = 0.1 * rgen();
+			// compute aabb
+			sphere.aabb_min = center - glm::vec3(radius);
+			sphere.aabb_max = center + glm::vec3(radius);
+			sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
 			m_sphere_primitives.push_back(sphere);
 		}
 	}
+#else
+	SpherePrimitive sphere;
+	sphere.aabb_min = { -1.0f, -1.0f, -1.0f };
+	sphere.aabb_max = { 1.0f , 1.0f, 1.0f };
+	sphere.pad = { 0.0f, 0.0f };
+	m_sphere_primitives.push_back(sphere);
+#endif
 }
 
 void BaseApplication::create_vertex_buffer()
@@ -1796,6 +1819,26 @@ void BaseApplication::create_uniform_buffers()
 
 void BaseApplication::create_sphere_buffer()
 {
+	auto bufsize = sizeof(SpherePrimitive) * m_sphere_primitives.size();
+	
+	VkBuffer staging_buffer;
+	VkDeviceMemory staging_memory;
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+				  staging_buffer, staging_memory);
+	
+	void *data;
+	auto res = vkMapMemory(m_device, staging_memory, 0, bufsize, 0, &data);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
+	std::memcpy(data, m_sphere_primitives.data(), bufsize);
+	vkUnmapMemory(m_device, staging_memory);
+
+	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sphere_buffer, m_sphere_buffer_memory);
+	copy_buffer(staging_buffer, m_sphere_buffer, bufsize);
+
+	vkDestroyBuffer(m_device, staging_buffer, nullptr);
+	vkFreeMemory(m_device, staging_memory, nullptr);
 }
 
 void BaseApplication::create_bottom_acceleration_structure()
@@ -1819,13 +1862,14 @@ void BaseApplication::create_bottom_acceleration_structure()
 	trias.transformData = VK_NULL_HANDLE;
 
 	VkGeometryNV g = {};
+	
 	g.sType = VK_STRUCTURE_TYPE_GEOMETRY_NV;
 	g.flags = VK_GEOMETRY_OPAQUE_BIT_NV;
 	g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_NV;
 	g.geometry.triangles = trias;
 	g.geometry.aabbs.sType = VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV;
 	g.geometry.aabbs.numAABBs = 0;
-	
+
 	VkAccelerationStructureInfoNV si = {};
 	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
 	si.instanceCount = 0;
@@ -1915,6 +1959,112 @@ void BaseApplication::create_bottom_acceleration_structure()
 
 void BaseApplication::create_bottom_acceleration_structure_spheres()
 {
+	auto indices = find_queue_families(m_gpu);
+	uint32_t qidx[] = {
+		indices.graphics_family.value(),
+	};
+
+	VkGeometryAABBNV spheres = {};
+	spheres.sType = VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV;
+	spheres.aabbData = m_sphere_buffer;
+	spheres.numAABBs = uint32_t(m_sphere_primitives.size());
+	spheres.stride = sizeof(SpherePrimitive);
+	spheres.offset = offsetof(SpherePrimitive, aabb_min);
+
+	VkGeometryNV g = {};
+	g.sType = VK_STRUCTURE_TYPE_GEOMETRY_NV;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_NV;
+	g.geometryType = VK_GEOMETRY_TYPE_AABBS_NV;
+	g.geometry.aabbs = spheres;
+	g.geometry.triangles.sType = VK_STRUCTURE_TYPE_GEOMETRY_TRIANGLES_NV;
+	g.geometry.triangles.vertexCount = 0;
+	//g.geometry.triangles.indexCount = 0;
+	
+	VkAccelerationStructureInfoNV si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+	si.instanceCount = 0;
+	si.geometryCount = 1;
+	si.pGeometries = &g;
+	si.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
+
+	VkAccelerationStructureCreateInfoNV ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
+	ci.info = si;
+
+	auto res = vkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_bottom_as_spheres.structure);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
+	
+	// allocate scratch
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		ri.accelerationStructure = m_bottom_as_spheres.structure;
+		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+	
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as_spheres.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+	
+		VkBufferCreateInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bi.size = mem_req.memoryRequirements.size;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		bi.pQueueFamilyIndices = qidx;
+		bi.queueFamilyIndexCount = 1;
+
+		res = vkCreateBuffer(m_device, &bi, nullptr, &m_bottom_as_spheres.scratch_buffer);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
+
+		res = vkBindBufferMemory(m_device, m_bottom_as_spheres.scratch_buffer, m_bottom_as_spheres.scratch_memory, 0);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
+		fprintf(stdout, "BOTTOM AS: needed scratch memory %.3f MB\n", mem_req.memoryRequirements.size / 1024.0f / 1024.0f);
+	}
+
+	// allocate structure
+	{
+		VkMemoryRequirements2 mem_req = {};
+		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		ri.accelerationStructure = m_bottom_as_spheres.structure;
+		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = mem_req.memoryRequirements.size;
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as_spheres.memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
+		VkBindAccelerationStructureMemoryInfoNV bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		bi.accelerationStructure = m_bottom_as_spheres.structure;
+		bi.memory = m_bottom_as_spheres.memory;
+		bi.memoryOffset = 0;
+		bi.deviceIndexCount = 0;
+
+		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
+		fprintf(stdout, "BOTTOM AS: needed structure memory %.3f MB\n", mem_req.memoryRequirements.size / 1024.0f / 1024.0f);
+	}
+
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	
+	vkCmdBuildAccelerationStructureNV(cmd_buf, &si, VK_NULL_HANDLE, 0,
+									  VK_FALSE, m_bottom_as_spheres.structure, VK_NULL_HANDLE,
+									  m_bottom_as_spheres.scratch_buffer, 0);
+
+	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
 void BaseApplication::create_top_acceleration_structure()
@@ -1927,7 +2077,7 @@ void BaseApplication::create_top_acceleration_structure()
 	VkAccelerationStructureInfoNV si = {};
 	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
 	si.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
-	si.instanceCount = 1;
+	si.instanceCount = 2;
 	si.geometryCount = 0;
 
 	VkAccelerationStructureCreateInfoNV ci = {};
@@ -1971,7 +2121,7 @@ void BaseApplication::create_top_acceleration_structure()
 		fprintf(stdout, "TOP AS: needed scratch memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
-	// allocate scratch
+	// allocate structure
 	{
 		VkMemoryRequirements2 mem_req = {};
 		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
@@ -2003,7 +2153,7 @@ void BaseApplication::create_top_acceleration_structure()
 
 	// configure instances
 	{
-		VkDeviceSize sz = sizeof(VkGeometryInstanceNV);
+		VkDeviceSize sz = 2 * sizeof(VkGeometryInstanceNV);
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
@@ -2028,19 +2178,34 @@ void BaseApplication::create_top_acceleration_structure()
 
 		uint64_t bottom_as_gpu_handle;
 		res = vkGetAccelerationStructureHandleNV(m_device, m_bottom_as.structure, sizeof(uint64_t), &bottom_as_gpu_handle);
-		if (res != VK_SUCCESS) throw std::runtime_error("failed to get acceleration structure gpu handle");
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to get triangles' acceleration structure gpu handle");
+
+		uint64_t spheres_as_gpu_handle;
+		res = vkGetAccelerationStructureHandleNV(m_device, m_bottom_as_spheres.structure, sizeof(uint64_t), &spheres_as_gpu_handle);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to get spheres' acceleration structure gpu handle");
 
 		VkGeometryInstanceNV *instance_ptr;
 		res = vkMapMemory(m_device, m_top_as.instances_memory, 0, sz, 0, (void**)&instance_ptr);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to map buffer");
 		glm::mat4 transform = glm::mat4(1.0f);
 		transform = glm::transpose(transform);
-		memcpy(instance_ptr->transform, &transform[0][0], sizeof(float)*12);
-		instance_ptr->instanceCustomIndex = 0;
-		instance_ptr->mask = 0xFF;
-		instance_ptr->flags = 0;
-		instance_ptr->instanceOffset = 0;
-		instance_ptr->accelerationStructureHandle = bottom_as_gpu_handle;
+		{
+			memcpy(instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
+			instance_ptr->instanceCustomIndex = 0;
+			instance_ptr->mask = 0xFF;
+			instance_ptr->flags = 0;
+			instance_ptr->instanceOffset = 0;
+			instance_ptr->accelerationStructureHandle = bottom_as_gpu_handle;
+		}
+		instance_ptr++;
+		{
+			memcpy(instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
+			instance_ptr->instanceCustomIndex = 1;
+			instance_ptr->mask = 0xFF; 
+			instance_ptr->flags = 0;
+			instance_ptr->instanceOffset = 2; // here we set 2 because we have shade/shadow shaders for the first instance
+			instance_ptr->accelerationStructureHandle = spheres_as_gpu_handle;
+		}
 		vkUnmapMemory(m_device, m_top_as.instances_memory);
 	}
 
@@ -2097,8 +2262,15 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_5.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
 	lb_5.pImmutableSamplers = nullptr;
 
-	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
-		lb_0, lb_1, lb_2, lb_3, lb_4, lb_5
+	VkDescriptorSetLayoutBinding lb_6 = {};
+	lb_6.binding = 6;
+	lb_6.descriptorCount = 1;
+	lb_6.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lb_6.stageFlags = VK_SHADER_STAGE_INTERSECTION_BIT_NV | VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_6.pImmutableSamplers = nullptr;
+
+	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
+		lb_0, lb_1, lb_2, lb_3, lb_4, lb_5, lb_6
 	};
 
 	VkDescriptorSetLayoutCreateInfo sli = {};
@@ -2132,6 +2304,8 @@ void BaseApplication::create_raytracing_pipeline()
 	auto miss_module = create_shader_module(read_file("resources/simple.rmiss.spv"));
 	auto shadow_chit_module = create_shader_module(read_file("resources/shadow.rchit.spv"));
 	auto shadow_miss_module = create_shader_module(read_file("resources/shadow.rmiss.spv"));
+	auto sphere_int_module = create_shader_module(read_file("resources/sphere.rint.spv"));
+	auto sphere_chit_module = create_shader_module(read_file("resources/sphere.rchit.spv"));
 
 	VkPipelineShaderStageCreateInfo rgci = {};
 	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -2163,9 +2337,21 @@ void BaseApplication::create_raytracing_pipeline()
 	shadow_mci.module = shadow_miss_module;
 	shadow_mci.pName = "main";
 
-	std::array<VkPipelineShaderStageCreateInfo, 5> stages = { rgci, chci, mci, shadow_chci, shadow_mci };
+	VkPipelineShaderStageCreateInfo sphere_ici = {};
+	sphere_ici.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	sphere_ici.stage = VK_SHADER_STAGE_INTERSECTION_BIT_NV;
+	sphere_ici.module = sphere_int_module;
+	sphere_ici.pName = "main";
 
-	std::array<VkRayTracingShaderGroupCreateInfoNV, 5> groups = {};
+	VkPipelineShaderStageCreateInfo sphere_chci = {};
+	sphere_chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	sphere_chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	sphere_chci.module = sphere_chit_module;
+	sphere_chci.pName = "main";
+
+	std::array<VkPipelineShaderStageCreateInfo, 7> stages = { rgci, chci, mci, shadow_chci, shadow_mci, sphere_ici, sphere_chci };
+
+	std::array<VkRayTracingShaderGroupCreateInfoNV, 6> groups = {};
 	
 	// raygen group
 	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
@@ -2181,28 +2367,35 @@ void BaseApplication::create_raytracing_pipeline()
 	groups[1].closestHitShader = 1;
 	groups[1].anyHitShader = VK_SHADER_UNUSED_NV;
 	groups[1].intersectionShader = VK_SHADER_UNUSED_NV;
-	// miss group
+	// shadow hitgroup
 	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
-	groups[2].generalShader = 2;
-	groups[2].closestHitShader = VK_SHADER_UNUSED_NV;
+	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
+	groups[2].generalShader = VK_SHADER_UNUSED_NV;
+	groups[2].closestHitShader = 3;
 	groups[2].anyHitShader = VK_SHADER_UNUSED_NV;
 	groups[2].intersectionShader = VK_SHADER_UNUSED_NV;
-	// shadow hitgroup
+	// sphere hit group
 	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
+	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_NV;
 	groups[3].generalShader = VK_SHADER_UNUSED_NV;
-	groups[3].closestHitShader = 3;
+	groups[3].closestHitShader = 6;
 	groups[3].anyHitShader = VK_SHADER_UNUSED_NV;
-	groups[3].intersectionShader = VK_SHADER_UNUSED_NV;
-	// shadow miss group
+	groups[3].intersectionShader = 5;
+	// miss group
 	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
 	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
-	groups[4].generalShader = 4;
+	groups[4].generalShader = 2;
 	groups[4].closestHitShader = VK_SHADER_UNUSED_NV;
 	groups[4].anyHitShader = VK_SHADER_UNUSED_NV;
 	groups[4].intersectionShader = VK_SHADER_UNUSED_NV;
-
+	// shadow miss group
+	groups[5].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[5].generalShader = 4;
+	groups[5].closestHitShader = VK_SHADER_UNUSED_NV;
+	groups[5].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[5].intersectionShader = VK_SHADER_UNUSED_NV;
+	
 
 	VkRayTracingPipelineCreateInfoNV ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
@@ -2222,6 +2415,10 @@ void BaseApplication::create_raytracing_pipeline()
 	vkDestroyShaderModule(m_device, raygen_module, nullptr);
 	vkDestroyShaderModule(m_device, chit_module, nullptr);
 	vkDestroyShaderModule(m_device, miss_module, nullptr);
+	vkDestroyShaderModule(m_device, shadow_chit_module, nullptr);
+	vkDestroyShaderModule(m_device, shadow_miss_module, nullptr);
+	vkDestroyShaderModule(m_device, sphere_chit_module, nullptr);
+	vkDestroyShaderModule(m_device, sphere_int_module, nullptr);
 }
 
 void BaseApplication::create_texture_image()
@@ -2443,8 +2640,13 @@ void BaseApplication::create_rt_descriptor_sets()
 		si.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		si.imageView = m_texture_img_view;
 		si.sampler = m_texture_sampler;
+
+		VkDescriptorBufferInfo spheres_bi = {};
+		spheres_bi.buffer = m_sphere_buffer;
+		spheres_bi.offset = 0;
+		spheres_bi.range = m_sphere_primitives.size() * sizeof(SpherePrimitive);
 		
-		std::array<VkWriteDescriptorSet, 6> dw = {};
+		std::array<VkWriteDescriptorSet, 7> dw = {};
 
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_rt_desc_sets[i];
@@ -2493,6 +2695,14 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		dw[5].descriptorCount = 1;
 		dw[5].pImageInfo = &si;
+
+		dw[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[6].dstSet = m_rt_desc_sets[i];
+		dw[6].dstBinding = 6;
+		dw[6].dstArrayElement = 0;
+		dw[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		dw[6].descriptorCount = 1;
+		dw[6].pBufferInfo = &spheres_bi;
 		   
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
@@ -2507,8 +2717,10 @@ void BaseApplication::create_shader_binding_table()
 	fprintf(stdout, "group base alignment %u\n", props.shaderGroupBaseAlignment);
 	fprintf(stdout, "group max stride %u\n", props.maxShaderGroupStride);
 	fprintf(stdout, "max recursion depth %u\n", props.maxRecursionDepth);
+	
+	const int group_count = 6;
 
-	VkDeviceSize sz = 64 + 64 + 64 + 64 + 64;
+	VkDeviceSize sz = group_count * 64;
 	VkDeviceSize stride = 64;
 
 	create_buffer(sz, VK_BUFFER_USAGE_RAY_TRACING_BIT_NV, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, m_rt_sbt, m_rt_sbt_memory);
@@ -2521,17 +2733,25 @@ void BaseApplication::create_shader_binding_table()
 		throw std::runtime_error("shadergroup handle size is different than 16 bytes");
 	}
 
-	ShaderGroupHandle handles[5];
-	vkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, 5, sizeof(ShaderGroupHandle) * 5, handles);
+	ShaderGroupHandle handles[group_count];
+	vkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, group_count, sizeof(ShaderGroupHandle) * group_count, handles);
 	std::memcpy(data, &handles[0], sizeof(ShaderGroupHandle));
 	data += 64;
+	// hit groups
+	// triangles 
 	std::memcpy(data, &handles[1], sizeof(ShaderGroupHandle));
 	data += 64;
-	std::memcpy(data, &handles[3], sizeof(ShaderGroupHandle));
-	data += 64;
+	// triangles shadow
 	std::memcpy(data, &handles[2], sizeof(ShaderGroupHandle));
 	data += 64;
+	// spheres 
+	std::memcpy(data, &handles[3], sizeof(ShaderGroupHandle));
+	data += 64;
+	// miss groups 
 	std::memcpy(data, &handles[4], sizeof(ShaderGroupHandle));
+	data += 64;
+	// miss shadow
+	std::memcpy(data, &handles[5], sizeof(ShaderGroupHandle));
 
 	vkUnmapMemory(m_device, m_rt_sbt_memory);
 }
@@ -2684,15 +2904,13 @@ void BaseApplication::create_rt_command_buffers()
 			0, VK_ACCESS_SHADER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
-
 		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline);
 		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline_layout,
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
 		vkCmdTraceRaysNV(m_rt_cmd_buffers[i],
 			/*raygen sbt*/ m_rt_sbt, 0,
-			/*miss sbt*/   m_rt_sbt, 192, 64,
+			/*miss sbt*/   m_rt_sbt, 256, 64,
 			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
-
 
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
 			0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -2770,7 +2988,7 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.proj[1][1] *= -1;
 	ubo.iview = glm::inverse(ubo.view * ubo.model);
 	ubo.iproj = glm::inverse(ubo.proj);
-	
+
 	ubo.light_pos = glm::vec4(10.0f * std::cos(time), 10 * std::sin(time), 0.0f, 1.0f);
 
 	void *data;

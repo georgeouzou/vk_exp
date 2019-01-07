@@ -69,6 +69,8 @@ file(GLOB_RECURSE GLSL_SRC_FILES
 	"${SHADER_DIR}/*.frag"
 	"${SHADER_DIR}/*.vert"
 	"${SHADER_DIR}/*.rgen"
+	"${SHADER_DIR}/*.rint"
+	"${SHADER_DIR}/*.rahit"
 	"${SHADER_DIR}/*.rchit"
 	"${SHADER_DIR}/*.rmiss"
 )

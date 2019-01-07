@@ -18,14 +18,7 @@ struct HitPayload
 	vec4 color_dist;
 };
 
-
-struct Attributes
-{
-	vec2 bary;
-};
-
 layout(location = 0) rayPayloadNV HitPayload payload;
-
 
 void main()
 {
@@ -39,7 +32,6 @@ void main()
 
 	const uint ray_flags = gl_RayFlagsOpaqueNV;
 	
-
 	vec3 final_color = vec3(0.0);
 
 	traceNV(scene, ray_flags, 0xFF, 0, 1, 0, origin, 0.0, dir, 1000.0, 0);

@@ -74,12 +74,11 @@ void main()
 
 	const uint shadow_ray_flags = gl_RayFlagsOpaqueNV | gl_RayFlagsTerminateOnFirstHitNV;
 	traceNV(scene, shadow_ray_flags, 0xFF, 1, 1, 1, shadow_ray_orig, 0.0, to_light1, 1000.0, 1);
-	
+
 	const float ambient = 0.1;
 	const float lighting1 = (shadow_payload.dist > 0.0) ? ambient : max(ambient, dot(hit_normal, to_light1));
-
-
 	vec3 out_color = lighting1 * hit_color;
+	
 
 	payload.color_dist = vec4(out_color, gl_HitTNV);
 }
