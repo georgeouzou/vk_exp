@@ -1745,14 +1745,15 @@ void BaseApplication::create_spheres()
 			sphere.aabb_min = center - glm::vec3(radius);
 			sphere.aabb_max = center + glm::vec3(radius);
 			sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
+			sphere.material = rgen() > 0.85f ? 1 : 0;
 			m_sphere_primitives.push_back(sphere);
 		}
 	}
 #else
 	SpherePrimitive sphere;
 	sphere.aabb_min = { -1.0f, -1.0f, -1.0f };
-	sphere.aabb_max = { 1.0f , 1.0f, 1.0f };
-	sphere.pad = { 0.0f, 0.0f };
+	sphere.aabb_max = { -0.5f , -0.5f, -0.5f };
+	sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
 	m_sphere_primitives.push_back(sphere);
 #endif
 }
@@ -2352,7 +2353,7 @@ void BaseApplication::create_raytracing_pipeline()
 	std::array<VkPipelineShaderStageCreateInfo, 7> stages = { rgci, chci, mci, shadow_chci, shadow_mci, sphere_ici, sphere_chci };
 
 	std::array<VkRayTracingShaderGroupCreateInfoNV, 6> groups = {};
-	
+
 	// raygen group
 	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
 	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
@@ -2395,7 +2396,6 @@ void BaseApplication::create_raytracing_pipeline()
 	groups[5].closestHitShader = VK_SHADER_UNUSED_NV;
 	groups[5].anyHitShader = VK_SHADER_UNUSED_NV;
 	groups[5].intersectionShader = VK_SHADER_UNUSED_NV;
-	
 
 	VkRayTracingPipelineCreateInfoNV ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
@@ -2404,11 +2404,11 @@ void BaseApplication::create_raytracing_pipeline()
 	ci.pStages = stages.data();
 	ci.groupCount = uint32_t(groups.size());
 	ci.pGroups = groups.data();
-	ci.maxRecursionDepth = 2;
+	ci.maxRecursionDepth = 4;
 	ci.layout = m_rt_pipeline_layout;
 	ci.basePipelineHandle = VK_NULL_HANDLE;
 	ci.basePipelineIndex = 0;
-	
+
 	auto res = vkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create a raytracing pipeline");
 
@@ -2719,8 +2719,8 @@ void BaseApplication::create_shader_binding_table()
 	fprintf(stdout, "max recursion depth %u\n", props.maxRecursionDepth);
 	
 	const int group_count = 6;
-
-	VkDeviceSize sz = group_count * 64;
+	const int duplicate_count = 1;
+	VkDeviceSize sz = (group_count+duplicate_count) * 64;
 	VkDeviceSize stride = 64;
 
 	create_buffer(sz, VK_BUFFER_USAGE_RAY_TRACING_BIT_NV, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, m_rt_sbt, m_rt_sbt_memory);
@@ -2746,6 +2746,9 @@ void BaseApplication::create_shader_binding_table()
 	data += 64;
 	// spheres 
 	std::memcpy(data, &handles[3], sizeof(ShaderGroupHandle));
+	data += 64;
+	// spheres shadow (same as triangles)
+	std::memcpy(data, &handles[2], sizeof(ShaderGroupHandle));
 	data += 64;
 	// miss groups 
 	std::memcpy(data, &handles[4], sizeof(ShaderGroupHandle));
@@ -2909,7 +2912,7 @@ void BaseApplication::create_rt_command_buffers()
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
 		vkCmdTraceRaysNV(m_rt_cmd_buffers[i],
 			/*raygen sbt*/ m_rt_sbt, 0,
-			/*miss sbt*/   m_rt_sbt, 256, 64,
+			/*miss sbt*/   m_rt_sbt, 320, 64,
 			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
 
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
@@ -2989,7 +2992,7 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.iview = glm::inverse(ubo.view * ubo.model);
 	ubo.iproj = glm::inverse(ubo.proj);
 
-	ubo.light_pos = glm::vec4(10.0f * std::cos(time), 10 * std::sin(time), 0.0f, 1.0f);
+	ubo.light_pos = glm::vec4(3.0f * std::cos(time), 3 * std::sin(time), 2.0f, 1.0f);
 
 	void *data;
 	auto res = vkMapMemory(m_device, m_uni_buffer_memory[idx], 0, sizeof(GlobalUniforms), 0, &data);
@@ -3077,5 +3080,8 @@ int main()
 
 	return EXIT_SUCCESS;
 }
+
+
+
 
 

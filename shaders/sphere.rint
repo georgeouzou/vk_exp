@@ -29,7 +29,6 @@ void main()
 	
 	vec3 aabb_max = vec3(sph.aabb_maxx, sph.aabb_maxy, sph.aabb_maxz);
 	vec3 aabb_min = vec3(sph.aabb_minx, sph.aabb_miny, sph.aabb_minz);
-
 	vec3 center = (aabb_max + aabb_min) / vec3(2.0);
 	float radius = (aabb_max.x - aabb_min.x) / 2.0;
 
@@ -44,13 +43,15 @@ void main()
 	float temp;
 	temp = (-b - sqrt(discr)) / a;
 	if (temp < gl_RayTmaxNV && temp > gl_RayTminNV) {
-		sphere_point = orig + temp * dir;
+		vec3 p = orig + temp * dir;
+		sphere_point = p;
 		reportIntersectionNV(temp, 0u);
 		return;
 	}
 	temp = (-b + sqrt(discr)) / a;
 	if (temp < gl_RayTmaxNV && temp > gl_RayTminNV) {
-		sphere_point = orig + temp * dir;
+		vec3 p = orig + temp * dir;
+		sphere_point = p;
 		reportIntersectionNV(temp, 0u);
 		return;
 	}
