@@ -89,10 +89,11 @@ endforeach(GLSL)
 
 add_custom_target(
 	Shaders
+	ALL
 	DEPENDS ${SPIRV_BINARY_FILES}
 )
 
-add_dependencies(${app} Shaders)
+#add_dependencies(${app} Shaders)
 
 # models
 
@@ -115,7 +116,7 @@ set(MODELS "${CMAKE_CURRENT_SOURCE_DIR}/models")
 
 # copy shaders to executable
 
-add_custom_command(TARGET ${app} POST_BUILD
+add_custom_command(TARGET Shaders POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
 		"${PROJECT_BINARY_DIR}/spirv_files"
