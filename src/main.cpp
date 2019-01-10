@@ -1895,14 +1895,6 @@ void BaseApplication::create_bottom_acceleration_structure()
 		ri.accelerationStructure = m_bottom_as.structure;
 		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
 	
-		VkMemoryAllocateInfo ai = {};
-		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		ai.allocationSize = mem_req.memoryRequirements.size;
-		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.scratch_memory);
-		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
-	
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.size = mem_req.memoryRequirements.size;
@@ -1910,10 +1902,18 @@ void BaseApplication::create_bottom_acceleration_structure()
 		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		bi.pQueueFamilyIndices = qidx;
 		bi.queueFamilyIndexCount = 1;
-
 		res = vkCreateBuffer(m_device, &bi, nullptr, &m_bottom_as.scratch_buffer);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
 
+		VkMemoryRequirements buf_mem_req = {};
+		vkGetBufferMemoryRequirements(m_device, m_bottom_as.scratch_buffer, &buf_mem_req);
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = buf_mem_req.size;
+		ai.memoryTypeIndex = find_memory_type(buf_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+	
 		res = vkBindBufferMemory(m_device, m_bottom_as.scratch_buffer, m_bottom_as.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
 		fprintf(stdout, "BOTTOM AS: needed scratch memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
@@ -2005,14 +2005,6 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 		ri.accelerationStructure = m_bottom_as_spheres.structure;
 		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
 	
-		VkMemoryAllocateInfo ai = {};
-		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		ai.allocationSize = mem_req.memoryRequirements.size;
-		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as_spheres.scratch_memory);
-		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
-	
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.size = mem_req.memoryRequirements.size;
@@ -2020,10 +2012,18 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		bi.pQueueFamilyIndices = qidx;
 		bi.queueFamilyIndexCount = 1;
-
 		res = vkCreateBuffer(m_device, &bi, nullptr, &m_bottom_as_spheres.scratch_buffer);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
 
+		VkMemoryRequirements buf_mem_req = {};
+		vkGetBufferMemoryRequirements(m_device, m_bottom_as_spheres.scratch_buffer, &buf_mem_req);
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = buf_mem_req.size;
+		ai.memoryTypeIndex = find_memory_type(buf_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as_spheres.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+	
 		res = vkBindBufferMemory(m_device, m_bottom_as_spheres.scratch_buffer, m_bottom_as_spheres.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
 		fprintf(stdout, "BOTTOM AS: needed scratch memory %.3f MB\n", mem_req.memoryRequirements.size / 1024.0f / 1024.0f);
@@ -2097,15 +2097,7 @@ void BaseApplication::create_top_acceleration_structure()
 		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
 		ri.accelerationStructure = m_top_as.structure;
 		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
-
-		VkMemoryAllocateInfo ai = {};
-		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		ai.allocationSize = mem_req.memoryRequirements.size;
-		ai.memoryTypeIndex = find_memory_type(mem_req.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.scratch_memory);
-		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
-
+		
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.size = mem_req.memoryRequirements.size;
@@ -2113,13 +2105,22 @@ void BaseApplication::create_top_acceleration_structure()
 		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		bi.pQueueFamilyIndices = qidx;
 		bi.queueFamilyIndexCount = 1;
-
 		res = vkCreateBuffer(m_device, &bi, nullptr, &m_top_as.scratch_buffer);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
 
+		VkMemoryRequirements buf_mem_req = {};
+		vkGetBufferMemoryRequirements(m_device, m_top_as.scratch_buffer, &buf_mem_req);
+		VkMemoryAllocateInfo ai = {};
+		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.allocationSize = buf_mem_req.size;
+		ai.memoryTypeIndex = find_memory_type(buf_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.scratch_memory);
+		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
+
 		res = vkBindBufferMemory(m_device, m_top_as.scratch_buffer, m_top_as.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
-		fprintf(stdout, "TOP AS: needed scratch memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "TOP AS: needed scratch memory %.3f MB\n", mem_req.memoryRequirements.size / 1024.0f / 1024.0f);
 	}
 
 	// allocate structure
@@ -2149,7 +2150,7 @@ void BaseApplication::create_top_acceleration_structure()
 
 		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
-		fprintf(stdout, "TOP AS: needed structure memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "TOP AS: needed structure memory %.3f MB\n", mem_req.memoryRequirements.size / 1024.0f / 1024.0f);
 	}
 
 	// configure instances
