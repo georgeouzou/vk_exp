@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <cinttypes>
 #include <functional>
 #include <vector>
 #include <optional>
@@ -21,8 +22,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/hash.hpp>
 #define NOMINMAX
+
+#if !defined(__linux__)
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#endif
+
 #define VK_NO_PROTOTYPES
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
@@ -1720,7 +1725,7 @@ void BaseApplication::load_model()
 		
 #endif
 		}
-		fprintf(stdout, "Loaded model: num vertices %llu, num indices %llu\n", 
+		fprintf(stdout, "Loaded model: num vertices %" PRIu64 ", num indices %" PRIu64 "\n", 
 				m_model_vertices.size(),
 				m_model_indices.size());
 	}
@@ -1916,7 +1921,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 	
 		res = vkBindBufferMemory(m_device, m_bottom_as.scratch_buffer, m_bottom_as.scratch_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
-		fprintf(stdout, "BOTTOM AS: needed scratch memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "BOTTOM AS: needed scratch memory %" PRIu64 " MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	// allocate scratch
@@ -1946,7 +1951,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 
 		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
-		fprintf(stdout, "BOTTOM AS: needed structure memory %llu MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
+		fprintf(stdout, "BOTTOM AS: needed structure memory %" PRIu64 " MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);

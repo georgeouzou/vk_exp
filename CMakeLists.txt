@@ -59,8 +59,12 @@ endif()
 
 # compile shaders
 
-if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")
-	set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe")
+if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64" OR ${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64")
+    if (WIN32)
+        set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe")
+    else()
+        set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/bin/glslangValidator")
+    endif()
 else()
 	message(FATAL_ERROR "32-bit systems are not supported!")
 endif()
