@@ -778,7 +778,6 @@ void BaseApplication::create_instance()
 	} else {
 		ci.enabledLayerCount = 0;
 	}
-	ci.enabledLayerCount = 0;
 	
 	auto res = vkCreateInstance(&ci, nullptr, &m_instance);
 	if (res != VK_SUCCESS) {
