@@ -44,18 +44,12 @@ target_include_directories(${app} PRIVATE ${VOLK})
 target_link_libraries(${app} volk)
 
 # vulkan
-
 find_package(Vulkan)
 if (NOT Vulkan_FOUND)
 	message(FATAL_ERROR "Could not find vulkan library!")
 endif()
-#target_link_libraries(${app} ${Vulkan_LIBRARIES})
 target_include_directories(${app} PRIVATE ${Vulkan_INCLUDE_DIRS})
 
-if (WIN32)
-	target_compile_definitions(${app} PRIVATE "VK_USE_PLATFORM_WIN32_KHR")
-	target_compile_definitions(${app} PRIVATE "GLFW_EXPOSE_NATIVE_WIN32")
-endif()
 
 # compile shaders
 

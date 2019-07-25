@@ -21,16 +21,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/hash.hpp>
-#define NOMINMAX
-
-#if !defined(__linux__)
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#endif
-
-#define VK_NO_PROTOTYPES
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
+
 #include "stb_image.h"
 #include "orbit_camera.h"
 
