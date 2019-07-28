@@ -24,6 +24,7 @@
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
 
+#include "GL/glew.h"
 #include "stb_image.h"
 #include "orbit_camera.h"
 
@@ -186,6 +187,7 @@ public:
 private:
 	void init_window();
 	void init_vulkan();
+	void init_opengl();
 	void main_loop();
 	void cleanup();
 
@@ -410,7 +412,6 @@ static void mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
 	app->camera().mouse_move(-int(xpos), -int(ypos), ms);
 }
 
-
 static void mouse_scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
 	(void)xoffset; // unused
@@ -493,6 +494,19 @@ void image_barrier(VkCommandBuffer commandBuffer,
 
 };
 
+void APIENTRY gl_debug_callback(GLenum source,
+	GLenum type,
+	GLuint id,
+	GLenum severity,
+	GLsizei length,
+	const GLchar* message,
+	const void* userParam)
+{
+	// ignore non-significant error/warning codes
+	if (id == 131169 || id == 131185 || id == 131218 || id == 131204) return;
+
+	std::fprintf(stderr, "OpenGL debug message (%u): %s\n", id, message);
+}
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
@@ -507,7 +521,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 void BaseApplication::run()
 {
 	init_window();
+	init_opengl();
 	init_vulkan();
+	
 	main_loop();
 }
 
@@ -535,14 +551,21 @@ void BaseApplication::init_window()
 	if (!ok) {
 		throw std::runtime_error("could not initialize glfw lib");
 	}
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+	//glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+	if (m_enable_validation_layers) {
+		glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+	}
 
 	m_window = glfwCreateWindow(m_width, m_height, "tutorial", NULL, NULL);
 	if (!m_window) {
 		throw std::runtime_error("could not create glfw window");
 	}
-
+	glfwMakeContextCurrent(m_window);
+	
 	glfwSetKeyCallback(m_window, key_callback);
 	glfwSetFramebufferSizeCallback(m_window, framebuffer_resize_callback);
 	glfwSetMouseButtonCallback(m_window, mouse_buttom_callback);
@@ -618,6 +641,24 @@ void BaseApplication::init_vulkan()
 	create_sync_objects();
 }
 
+void BaseApplication::init_opengl()
+{
+	GLenum ok = glewInit();
+	if (ok != GLEW_OK) {
+		throw std::runtime_error("could not initialize glew");
+	}
+	ok = glGetError();
+	if (m_enable_validation_layers) {
+		glEnable(GL_DEBUG_OUTPUT);
+		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+		glDebugMessageCallback(gl_debug_callback , nullptr);
+		glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+	}
+
+	GLuint memobj;
+	glCreateMemoryObjectsEXT(1, &memobj);
+}
+
 void BaseApplication::recreate_swapchain()
 {
 	int width = 0, height = 0;
@@ -660,6 +701,7 @@ void BaseApplication::main_loop()
 
 void BaseApplication::cleanup_swapchain()
 {
+	if (!m_device) return;
 	for (auto b : m_uni_buffers) {
 		vkDestroyBuffer(m_device, b, nullptr);	
 	}
@@ -669,15 +711,16 @@ void BaseApplication::cleanup_swapchain()
 
 	// no need to free desc sets because we destroy the pool
 	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
-	if (m_device) {
-		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-			static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
-		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-							 static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
-	}
+	
+	vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+		static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
+	vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+		static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+	
 	for (auto fb : m_swapchain_fbs) {
 		vkDestroyFramebuffer(m_device, fb, nullptr);
 	}
+	
 
 	if (m_graphics_pipeline) vkDestroyPipeline(m_device, m_graphics_pipeline, nullptr);
 	if (m_descriptor_set_layout) vkDestroyDescriptorSetLayout(m_device, m_descriptor_set_layout, nullptr);
@@ -689,11 +732,10 @@ void BaseApplication::cleanup_swapchain()
 	if (m_depth_img_memory) vkFreeMemory(m_device, m_depth_img_memory, nullptr);
 
 	// cleanup raytracing stuff
-	if (m_device) {
-		vkDestroyImageView(m_device, m_rt_img_view, nullptr);
-		vkDestroyImage(m_device, m_rt_img, nullptr);
-		vkFreeMemory(m_device, m_rt_img_memory, nullptr);
-	}
+	vkDestroyImageView(m_device, m_rt_img_view, nullptr);
+	vkDestroyImage(m_device, m_rt_img, nullptr);
+	vkFreeMemory(m_device, m_rt_img_memory, nullptr);
+	
 
 	for (auto img_view : m_swapchain_img_views) {
 		vkDestroyImageView(m_device, img_view, nullptr);
@@ -733,15 +775,17 @@ void BaseApplication::cleanup()
 		vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
 	}
 	
-
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-		vkDestroyFence(m_device, m_fen_flight[i], nullptr);
-		vkDestroySemaphore(m_device, m_sem_img_available[i], nullptr);
-		vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
+	if (m_device) {
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+			vkDestroyFence(m_device, m_fen_flight[i], nullptr);
+			vkDestroySemaphore(m_device, m_sem_img_available[i], nullptr);
+			vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
+		}
+		if (m_transfer_cmd_pool) vkDestroyCommandPool(m_device, m_transfer_cmd_pool, nullptr);
+		if (m_graphics_cmd_pool) vkDestroyCommandPool(m_device, m_graphics_cmd_pool, nullptr);
+		vkDestroyDevice(m_device, nullptr);
 	}
-	if (m_transfer_cmd_pool) vkDestroyCommandPool(m_device, m_transfer_cmd_pool, nullptr);
-	if (m_graphics_cmd_pool) vkDestroyCommandPool(m_device, m_graphics_cmd_pool, nullptr);
-	if (m_device) vkDestroyDevice(m_device, nullptr);
+
 	if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
 
 	if (m_debug_callback) destroy_debug_callback();
@@ -1737,7 +1781,7 @@ void BaseApplication::create_spheres()
 		for (int b = -10; b < 10; ++b) {
 			SpherePrimitive sphere = {};
 			glm::vec3 center = glm::vec3(scale*a + scale *rgen(), scale*b + scale*rgen(), -0.6f);
-			float radius = 0.1 * rgen();
+			float radius = 0.1f * rgen();
 			// compute aabb
 			sphere.aabb_min = center - glm::vec3(radius);
 			sphere.aabb_max = center + glm::vec3(radius);

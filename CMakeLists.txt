@@ -12,6 +12,7 @@ set(src
 	src/stb_image.c
 	src/tiny_obj_loader.cpp
 	src/orbit_camera.cpp
+	src/GL/glew.c
 )
 
 add_executable(${app} ${src})
@@ -50,6 +51,9 @@ if (NOT Vulkan_FOUND)
 endif()
 target_include_directories(${app} PRIVATE ${Vulkan_INCLUDE_DIRS})
 
+find_package(OpenGL)
+target_link_libraries(${app} ${OPENGL_LIBRARIES})
+target_compile_definitions(${app} PRIVATE "GLEW_STATIC")
 
 # compile shaders
 
