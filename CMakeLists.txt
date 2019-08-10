@@ -4,6 +4,13 @@ set(app VulkanExperiments)
 
 project(${app})
 
+set (CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    add_compile_options (-fdiagnostics-color=always)
+elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    add_compile_options (-fcolor-diagnostics)
+endif()
+
 set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 
@@ -12,7 +19,6 @@ set(src
 	src/stb_image.c
 	src/tiny_obj_loader.cpp
 	src/orbit_camera.cpp
-	src/GL/glew.c
 )
 
 add_executable(${app} ${src})
@@ -50,10 +56,6 @@ if (NOT Vulkan_FOUND)
 	message(FATAL_ERROR "Could not find vulkan library!")
 endif()
 target_include_directories(${app} PRIVATE ${Vulkan_INCLUDE_DIRS})
-
-find_package(OpenGL)
-target_link_libraries(${app} ${OPENGL_LIBRARIES})
-target_compile_definitions(${app} PRIVATE "GLEW_STATIC")
 
 # compile shaders
 

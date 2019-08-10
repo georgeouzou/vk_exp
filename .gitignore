@@ -336,4 +336,5 @@ build*/
 # ignore cmake settings
 
 CMakeSettings.json
+compile_commands.json
 

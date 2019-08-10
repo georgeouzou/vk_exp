@@ -24,7 +24,6 @@
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
 
-#include "GL/glew.h"
 #include "stb_image.h"
 #include "orbit_camera.h"
 
@@ -494,20 +493,6 @@ void image_barrier(VkCommandBuffer commandBuffer,
 
 };
 
-void APIENTRY gl_debug_callback(GLenum source,
-	GLenum type,
-	GLuint id,
-	GLenum severity,
-	GLsizei length,
-	const GLchar* message,
-	const void* userParam)
-{
-	// ignore non-significant error/warning codes
-	if (id == 131169 || id == 131185 || id == 131218 || id == 131204) return;
-
-	std::fprintf(stderr, "OpenGL debug message (%u): %s\n", id, message);
-}
-
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
 	VkDebugUtilsMessageTypeFlagsEXT message_type,
@@ -521,9 +506,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 void BaseApplication::run()
 {
 	init_window();
-	init_opengl();
 	init_vulkan();
-	
 	main_loop();
 }
 
@@ -551,21 +534,12 @@ void BaseApplication::init_window()
 	if (!ok) {
 		throw std::runtime_error("could not initialize glfw lib");
 	}
-	//glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
-	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
-	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-	if (m_enable_validation_layers) {
-		glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
-	}
-
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	m_window = glfwCreateWindow(m_width, m_height, "tutorial", NULL, NULL);
 	if (!m_window) {
 		throw std::runtime_error("could not create glfw window");
 	}
-	glfwMakeContextCurrent(m_window);
-	
+
 	glfwSetKeyCallback(m_window, key_callback);
 	glfwSetFramebufferSizeCallback(m_window, framebuffer_resize_callback);
 	glfwSetMouseButtonCallback(m_window, mouse_buttom_callback);
@@ -639,24 +613,6 @@ void BaseApplication::init_vulkan()
 	create_rt_command_buffers();
 
 	create_sync_objects();
-}
-
-void BaseApplication::init_opengl()
-{
-	GLenum ok = glewInit();
-	if (ok != GLEW_OK) {
-		throw std::runtime_error("could not initialize glew");
-	}
-	ok = glGetError();
-	if (m_enable_validation_layers) {
-		glEnable(GL_DEBUG_OUTPUT);
-		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
-		glDebugMessageCallback(gl_debug_callback , nullptr);
-		glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
-	}
-
-	GLuint memobj;
-	glCreateMemoryObjectsEXT(1, &memobj);
 }
 
 void BaseApplication::recreate_swapchain()
