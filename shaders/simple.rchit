@@ -19,7 +19,7 @@ struct TriVertex
 	vec4 tex_coord;
 };
 
-layout(binding = 0) uniform accelerationStructureNV scene;
+layout(set = 0, binding = 0) uniform accelerationStructureNV scene;
 
 layout(binding = 2) uniform GlobalUniforms
 {
