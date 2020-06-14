@@ -13,6 +13,7 @@ endif()
 
 set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+set(MODELS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models")
 
 set(src 
 	src/main.cpp 
@@ -56,74 +57,14 @@ if (NOT Vulkan_FOUND)
 	message(FATAL_ERROR "Could not find vulkan library!")
 endif()
 target_include_directories(${app} PRIVATE ${Vulkan_INCLUDE_DIRS})
-
-# compile shaders
-
-if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64" OR ${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64")
-    if (WIN32)
-        set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe")
-    else()
-        set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/bin/glslangValidator")
-    endif()
-else()
-	message(FATAL_ERROR "32-bit systems are not supported!")
-endif()
-
-file(GLOB_RECURSE GLSL_SRC_FILES
-	"${SHADER_DIR}/*.frag"
-	"${SHADER_DIR}/*.vert"
-	"${SHADER_DIR}/*.rgen"
-	"${SHADER_DIR}/*.rint"
-	"${SHADER_DIR}/*.rahit"
-	"${SHADER_DIR}/*.rchit"
-	"${SHADER_DIR}/*.rmiss"
-)
-
-foreach(GLSL ${GLSL_SRC_FILES})
-	get_filename_component(FILE_NAME ${GLSL} NAME)
-	set(SPIRV "${PROJECT_BINARY_DIR}/spirv_files/${FILE_NAME}.spv")
-	add_custom_command(
-		OUTPUT ${SPIRV}
-		COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_BINARY_DIR}/spirv_files/"
-		COMMAND ${GLSL_VALIDATOR} -V  ${GLSL} -o ${SPIRV}
-		DEPENDS ${GLSL}
-	)
-	list(APPEND SPIRV_BINARY_FILES ${SPIRV})
-endforeach(GLSL)
-
-add_custom_target(
-	Shaders
-	ALL
-	DEPENDS ${SPIRV_BINARY_FILES}
-)
-
-#add_dependencies(${app} Shaders)
-
-# models
-
-set(MODELS "${CMAKE_CURRENT_SOURCE_DIR}/models")
-
-# download resources
-
-#set(DOWNLOADABLES "${PROJECT_BINARY_DIR}/downloadables/")
-#file(MAKE_DIRECTORY ${DOWNLOADABLES})
-
-#if (NOT EXISTS "${DOWNLOADABLES}/chalet.obj")
-#	MESSAGE(STATUS "Downloading model resources")
-#	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.obj.zip "${DOWNLOADABLES}/chalet.obj.zip"  SHOW_PROGRESS)
-#	execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${DOWNLOADABLES}/chalet.obj.zip WORKING_DIRECTORY ${DOWNLOADABLES})
-#	file(REMOVE ${DOWNLOADABLES}/chalet.obj.zip)
-#endif()
-#if (NOT EXISTS "${DOWNLOADABLES}/chalet.jpg")
-#	file(DOWNLOAD https://vulkan-tutorial.com/resources/chalet.jpg "${DOWNLOADABLES}/chalet.jpg"  SHOW_PROGRESS)
-#endif()
+target_link_libraries(${app} ${Vulkan_INCLUDE_DIRS}/../Lib/shaderc_shared.lib)
 
 # copy shaders to executable
 
-add_custom_command(TARGET Shaders POST_BUILD
+add_custom_command(TARGET ${app} POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
-		"${PROJECT_BINARY_DIR}/spirv_files"
+		${SHADER_DIR}
 		"$<TARGET_FILE_DIR:${app}>/resources"
 )
 
@@ -132,6 +73,6 @@ add_custom_command(TARGET Shaders POST_BUILD
 add_custom_command(TARGET ${app} POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory 
-		${MODELS}
+		${MODELS_DIR}
 		"$<TARGET_FILE_DIR:${app}>/resources"
 )

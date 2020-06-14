@@ -15,6 +15,7 @@
 #include <random>
 
 #include <volk.h>
+#include <shaderc/shaderc.hpp>
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
 #define GLM_ENABLE_EXPERIMENTAL
@@ -186,7 +187,6 @@ public:
 private:
 	void init_window();
 	void init_vulkan();
-	void init_opengl();
 	void main_loop();
 	void cleanup();
 
@@ -216,7 +216,8 @@ private:
 	void create_render_pass();
 	void create_descriptor_set_layout();
 	void create_graphics_pipeline();
-	VkShaderModule create_shader_module(const std::vector<char> &code) const;
+
+	VkShaderModule create_shader_module(const std::string& file_name, shaderc_shader_kind shader_kind, const std::vector<char>& code) const;
 
 	void create_framebuffers();
 
@@ -290,6 +291,8 @@ private:
 	std::vector<const char*> m_device_extensions;
 	size_t m_current_frame_idx{ 0 };
 	bool m_window_resized{ false };
+
+	shaderc_compiler_t m_shader_compiler{ nullptr };
 
 	VkInstance m_instance{ VK_NULL_HANDLE };
 	VkDebugUtilsMessengerEXT m_debug_callback{ VK_NULL_HANDLE };
@@ -562,6 +565,8 @@ void BaseApplication::init_vulkan()
 
 	create_instance();
 	volkLoadInstance(m_instance);
+	// initialize compiler
+	m_shader_compiler = shaderc_compiler_initialize();
 
 	if (m_enable_validation_layers) {
 		setup_debug_callback();
@@ -743,6 +748,8 @@ void BaseApplication::cleanup()
 	}
 
 	if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+
+	if (m_shader_compiler) shaderc_compiler_release(m_shader_compiler);
 
 	if (m_debug_callback) destroy_debug_callback();
 	if (m_instance) vkDestroyInstance(m_instance, nullptr);
@@ -1238,10 +1245,10 @@ void BaseApplication::create_descriptor_set_layout()
 void BaseApplication::create_graphics_pipeline()
 {
 	// 1. Shader modules
-	auto vert_code = read_file("resources/simple.vert.spv");
-	auto frag_code = read_file("resources/simple.frag.spv");
-	auto vert_module = create_shader_module(vert_code);
-	auto frag_module = create_shader_module(frag_code);
+	auto vert_code = read_file("resources/simple.vert");
+	auto frag_code = read_file("resources/simple.frag");
+	auto vert_module = create_shader_module("simple.vert", shaderc_vertex_shader, vert_code);
+	auto frag_module = create_shader_module("simple.frag", shaderc_fragment_shader, frag_code);
 
 	VkPipelineShaderStageCreateInfo vsci = {};
 	vsci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1397,15 +1404,32 @@ void BaseApplication::create_graphics_pipeline()
 	vkDestroyShaderModule(m_device, frag_module, nullptr);
 }
 
-VkShaderModule BaseApplication::create_shader_module(const std::vector<char>& code) const
+VkShaderModule BaseApplication::create_shader_module(const std::string &file_name, shaderc_shader_kind shader_kind, const std::vector<char>& code) const
 {
+	shaderc_compile_options_t opts = shaderc_compile_options_initialize();
+	shaderc_compile_options_set_optimization_level(opts, shaderc_optimization_level_size);
+
+	shaderc_compilation_result_t result = shaderc_compile_into_spv(m_shader_compiler,
+		code.data(), code.size(), shader_kind, file_name.c_str(), "main", opts);
+	
+	if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
+		shaderc_compile_options_release(opts);
+		shaderc_result_release(result);
+		throw std::runtime_error("failed to compile shader");
+	}
+
+	size_t num_bytes = shaderc_result_get_length(result);
+
 	VkShaderModuleCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-	ci.codeSize = code.size();
+	ci.codeSize = num_bytes;
 	// cast bytes to uints
-	ci.pCode = reinterpret_cast<const uint32_t*>(code.data());
+	ci.pCode = reinterpret_cast<const uint32_t*>(shaderc_result_get_bytes(result));
 	VkShaderModule shader_module;
 	auto res = vkCreateShaderModule(m_device, &ci, nullptr, &shader_module);
+	shaderc_compile_options_release(opts);
+	shaderc_result_release(result);
+
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to create shader module");
 	}
@@ -1689,6 +1713,7 @@ void BaseApplication::load_model()
 	for (const auto &shape : shapes) {
 		for (const auto &index : shape.mesh.indices) {
 			Vertex vertex = {};
+			if (index.vertex_index < 0 || index.texcoord_index < 0 || index.normal_index < 0) continue;
 			vertex.pos = {
 				(attrib.vertices[3 * index.vertex_index + 0] - centroid.x)/ scale,
 				(attrib.vertices[3 * index.vertex_index + 1] - centroid.y)/ scale,
@@ -2298,13 +2323,13 @@ void BaseApplication::create_raytracing_pipeline_layout()
 void BaseApplication::create_raytracing_pipeline()
 {
 	// raygen
-	auto raygen_module = create_shader_module(read_file("resources/simple.rgen.spv"));
-	auto chit_module = create_shader_module(read_file("resources/simple.rchit.spv"));
-	auto miss_module = create_shader_module(read_file("resources/simple.rmiss.spv"));
-	auto shadow_chit_module = create_shader_module(read_file("resources/shadow.rchit.spv"));
-	auto shadow_miss_module = create_shader_module(read_file("resources/shadow.rmiss.spv"));
-	auto sphere_int_module = create_shader_module(read_file("resources/sphere.rint.spv"));
-	auto sphere_chit_module = create_shader_module(read_file("resources/sphere.rchit.spv"));
+	auto raygen_module = create_shader_module("simple.rgen", shaderc_raygen_shader, read_file("resources/simple.rgen"));
+	auto chit_module = create_shader_module("simple.rchit", shaderc_closesthit_shader, read_file("resources/simple.rchit"));
+	auto miss_module = create_shader_module("simple.rmiss", shaderc_miss_shader, read_file("resources/simple.rmiss"));
+	auto shadow_chit_module = create_shader_module("shadow.rchit", shaderc_closesthit_shader, read_file("resources/shadow.rchit"));
+	auto shadow_miss_module = create_shader_module("shadow.rmiss", shaderc_miss_shader, read_file("resources/shadow.rmiss"));
+	auto sphere_int_module = create_shader_module("sphere.rint", shaderc_intersection_shader, read_file("resources/sphere.rint"));
+	auto sphere_chit_module = create_shader_module("sphere.rchit", shaderc_closesthit_shader, read_file("resources/sphere.rchit"));
 
 	VkPipelineShaderStageCreateInfo rgci = {};
 	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
