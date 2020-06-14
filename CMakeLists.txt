@@ -56,8 +56,14 @@ find_package(Vulkan)
 if (NOT Vulkan_FOUND)
 	message(FATAL_ERROR "Could not find vulkan library!")
 endif()
+
 target_include_directories(${app} PRIVATE ${Vulkan_INCLUDE_DIRS})
+if (WIN32)
 target_link_libraries(${app} ${Vulkan_INCLUDE_DIRS}/../Lib/shaderc_shared.lib)
+else()
+target_link_directories(${app} PRIVATE $ENV{VULKAN_SDK}/lib)
+target_link_libraries(${app} shaderc_shared)
+endif()
 
 # copy shaders to executable
 

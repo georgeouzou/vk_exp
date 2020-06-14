@@ -15,7 +15,10 @@
 #include <random>
 
 #include <volk.h>
-#include <shaderc/shaderc.hpp>
+
+#define NV_EXTENSIONS
+#include <shaderc/shaderc.h>
+
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
 #define GLM_ENABLE_EXPERIMENTAL
