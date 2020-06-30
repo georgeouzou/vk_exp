@@ -11,6 +11,7 @@ and whatever i can figure out by reading the Vulkan spec.
 ## Licenses and Open Source Software
 
 The code uses the following dependencies:
+* Latest vulkan sdk (supporting VK_KHR_raytracing)
 * [TinyObjLoader](https://github.com/syoyo/tinyobjloader-c/blob/master/README.md)
 * [stb_image.h](https://github.com/nothings/stb/blob/master/stb_image.h)
 * [glfw](https://github.com/glfw/glfw)

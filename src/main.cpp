@@ -16,7 +16,6 @@
 
 #include <volk.h>
 
-#define NV_EXTENSIONS
 #include <shaderc/shaderc.h>
 
 #define GLM_FORCE_RADIANS
