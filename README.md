@@ -8,6 +8,9 @@ Based on
 
 and whatever i can figure out by reading the Vulkan spec.
 
+To run you need to have an RTX capable gpu and the latest beta driver from NVIDIA that supports
+VK_KHR_ray_tracing
+
 ## Licenses and Open Source Software
 
 The code uses the following dependencies:
