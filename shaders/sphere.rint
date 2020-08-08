@@ -1,5 +1,5 @@
 #version 460
-#extension GL_NV_ray_tracing : require
+#extension GL_EXT_ray_tracing : require
 
 struct SpherePrimitive
 {
@@ -19,13 +19,13 @@ layout(std430, binding = 6) readonly buffer SpherePrimitives
 	SpherePrimitive spheres[];
 };
 
-hitAttributeNV vec3 sphere_point;
+hitAttributeEXT vec3 sphere_point;
 
 void main()
 {
 	SpherePrimitive sph = spheres[gl_PrimitiveID];
-	vec3 orig = gl_WorldRayOriginNV;
-	vec3 dir = normalize(gl_WorldRayDirectionNV);
+	vec3 orig = gl_WorldRayOriginEXT;
+	vec3 dir = normalize(gl_WorldRayDirectionEXT);
 	
 	vec3 aabb_max = vec3(sph.aabb_maxx, sph.aabb_maxy, sph.aabb_maxz);
 	vec3 aabb_min = vec3(sph.aabb_minx, sph.aabb_miny, sph.aabb_minz);
@@ -42,17 +42,17 @@ void main()
 
 	float temp;
 	temp = (-b - sqrt(discr)) / a;
-	if (temp < gl_RayTmaxNV && temp > gl_RayTminNV) {
+	if (temp < gl_RayTmaxEXT && temp > gl_RayTminEXT) {
 		vec3 p = orig + temp * dir;
 		sphere_point = p;
-		reportIntersectionNV(temp, 0u);
+		reportIntersectionEXT(temp, 0u);
 		return;
 	}
 	temp = (-b + sqrt(discr)) / a;
-	if (temp < gl_RayTmaxNV && temp > gl_RayTminNV) {
+	if (temp < gl_RayTmaxEXT && temp > gl_RayTminEXT) {
 		vec3 p = orig + temp * dir;
 		sphere_point = p;
-		reportIntersectionNV(temp, 0u);
+		reportIntersectionEXT(temp, 0u);
 		return;
 	}
 }

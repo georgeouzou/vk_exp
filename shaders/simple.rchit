@@ -1,5 +1,5 @@
 #version 460
-#extension GL_NV_ray_tracing : require
+#extension GL_EXT_ray_tracing : require
 
 struct HitPayload
 {
@@ -19,7 +19,7 @@ struct TriVertex
 	vec4 tex_coord;
 };
 
-layout(set = 0, binding = 0) uniform accelerationStructureNV scene;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
 layout(binding = 2) uniform GlobalUniforms
 {
@@ -43,10 +43,10 @@ layout(std430, binding = 4) readonly buffer TriIndices
 
 layout(binding = 5) uniform sampler2D tex_sampler;
 
-layout(location = 0) rayPayloadInNV HitPayload payload;
-					 hitAttributeNV vec2 bary;
+layout(location = 0) rayPayloadInEXT HitPayload payload;
+					 hitAttributeEXT vec2 bary;
 
-layout(location = 1) rayPayloadNV ShadowPayload shadow_payload;
+layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
 
 void main()
 {
@@ -69,16 +69,16 @@ void main()
 	vec3 hit_color = texture(tex_sampler, texc).bgr;
 
 	const vec3 hit_normal = norm;
-	const vec3 hit_pos = gl_WorldRayOriginNV + gl_HitTNV * gl_WorldRayDirectionNV;
+	const vec3 hit_pos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
 	const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
 	const vec3 to_light1 = normalize(ubo.light_pos.xyz);
 
-	const uint shadow_ray_flags = gl_RayFlagsOpaqueNV | gl_RayFlagsTerminateOnFirstHitNV;
-	traceNV(scene, shadow_ray_flags, 0xFF, 1, 1, 1, shadow_ray_orig, 0.001, to_light1, 1000.0, 1);
+	const uint shadow_ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
+	traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 1, 1, shadow_ray_orig, 0.001, to_light1, 1000.0, 1);
 
 	const float ambient = 0.1;
 	const float lighting1 = (shadow_payload.dist > 0.0) ? ambient : max(ambient, dot(hit_normal, to_light1));
 	vec3 out_color = lighting1 * hit_color;
-	payload.color_dist = vec4(out_color, gl_HitTNV);
+	payload.color_dist = vec4(out_color, gl_HitTEXT);
 	payload.depth += 1;
 }

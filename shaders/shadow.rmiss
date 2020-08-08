@@ -1,12 +1,12 @@
 #version 460
-#extension GL_NV_ray_tracing : require
+#extension GL_EXT_ray_tracing : require
 
 struct ShadowPayload
 {
 	float dist;
 };
 
-layout(location = 1) rayPayloadInNV ShadowPayload shadow_payload;
+layout(location = 1) rayPayloadInEXT ShadowPayload shadow_payload;
 
 void main()
 {

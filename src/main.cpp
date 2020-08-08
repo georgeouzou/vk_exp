@@ -15,7 +15,6 @@
 #include <random>
 
 #include <volk.h>
-
 #include <shaderc/shaderc.h>
 
 #define GLM_FORCE_RADIANS
@@ -33,20 +32,12 @@
 const int MAX_FRAMES_IN_FLIGHT = 3;
 #define ENABLE_VALIDATION_LAYERS
 
-struct VkGeometryInstanceNV
-{
-	float          transform[12];
-	uint32_t       instanceCustomIndex : 24;
-	uint32_t       mask : 8;
-	uint32_t       instanceOffset : 24;
-	uint32_t       flags : 8;
-	uint64_t       accelerationStructureHandle;
-};
-
 struct ShaderGroupHandle
 {
 	uint64_t i0;
 	uint64_t i1;
+	uint64_t i2;
+	uint64_t i3;
 };
 
 struct QueueFamilyIndices
@@ -136,8 +127,7 @@ enum Material
 struct SpherePrimitive
 {
 	glm::vec4 albedo;
-	glm::vec3 aabb_min;
-	glm::vec3 aabb_max;
+	VkAabbPositionsKHR bbox;
 	int32_t material;
 	float fuzz;
 };
@@ -157,7 +147,7 @@ struct GlobalUniforms
 
 struct ASBuffers
 {
-	VkAccelerationStructureNV structure{ VK_NULL_HANDLE };
+	VkAccelerationStructureKHR structure{ VK_NULL_HANDLE };
 	VkDeviceMemory memory{ VK_NULL_HANDLE };
 	VkBuffer scratch_buffer{ VK_NULL_HANDLE };
 	VkDeviceMemory scratch_memory{ VK_NULL_HANDLE };
@@ -166,7 +156,7 @@ struct ASBuffers
 
 	void destroy(VkDevice device)
 	{
-		if (structure) vkDestroyAccelerationStructureNV(device, structure, nullptr);
+		if (structure) vkDestroyAccelerationStructureKHR(device, structure, nullptr);
 		vkDestroyBuffer(device, scratch_buffer, nullptr);
 		vkDestroyBuffer(device, instances, nullptr);
 		vkFreeMemory(device, memory, nullptr);
@@ -459,12 +449,12 @@ bool format_has_stencil_component(VkFormat format)
 	return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
-VkPhysicalDeviceRayTracingPropertiesNV get_raytracing_properties(VkPhysicalDevice gpu)
+VkPhysicalDeviceRayTracingPropertiesKHR get_raytracing_properties(VkPhysicalDevice gpu)
 {
 	VkPhysicalDeviceProperties2 props = {};
 	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-	VkPhysicalDeviceRayTracingPropertiesNV rt_props = {};
-	rt_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PROPERTIES_NV;
+	VkPhysicalDeviceRayTracingPropertiesKHR rt_props = {};
+	rt_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PROPERTIES_KHR;
 	props.pNext = &rt_props;
 	vkGetPhysicalDeviceProperties2(gpu, &props);
 	return rt_props;
@@ -517,7 +507,7 @@ void BaseApplication::run()
 
 BaseApplication::BaseApplication()
 {
-	m_validation_layers.push_back("VK_LAYER_LUNARG_standard_validation");
+	m_validation_layers.push_back("VK_LAYER_KHRONOS_validation");
 #if !defined(ENABLE_VALIDATION_LAYERS)
 	m_enable_validation_layers = false;
 #else 
@@ -525,7 +515,9 @@ BaseApplication::BaseApplication()
 #endif
 
 	m_device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-	m_device_extensions.push_back(VK_NV_RAY_TRACING_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_RAY_TRACING_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
 }
 
 BaseApplication::~BaseApplication()
@@ -772,7 +764,7 @@ void BaseApplication::create_instance()
 	ai.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 	ai.pEngineName = "-";
 	ai.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-	ai.apiVersion = VK_API_VERSION_1_1;
+	ai.apiVersion = VK_API_VERSION_1_2;
 
 	auto required_exts = get_required_extensions();
 
@@ -895,8 +887,16 @@ bool BaseApplication::check_device_extension_support(VkPhysicalDevice gpu) const
 
 bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 {
-	VkPhysicalDeviceFeatures features;
-	vkGetPhysicalDeviceFeatures(gpu, &features);
+
+	VkPhysicalDeviceRayTracingFeaturesKHR rt_features = {};
+	rt_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_FEATURES_KHR;
+	VkPhysicalDeviceVulkan12Features v12_features = {};
+	v12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	v12_features.pNext = &rt_features;
+	VkPhysicalDeviceFeatures2 features;
+	features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features.pNext = &v12_features;
+	vkGetPhysicalDeviceFeatures2(gpu, &features);
 	
 	auto indices = find_queue_families(gpu);
 
@@ -908,7 +908,11 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 			!chain_details.present_modes.empty();
 	}
 
-	bool supported_features = features.vertexPipelineStoresAndAtomics && features.samplerAnisotropy;
+	bool supported_features =
+		features.features.vertexPipelineStoresAndAtomics &&
+		features.features.samplerAnisotropy &&
+		rt_features.rayTracing &&
+		v12_features.bufferDeviceAddress;
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
@@ -967,15 +971,26 @@ void BaseApplication::create_logical_device()
 		qcis.push_back(qci);
 	}
 
-	VkPhysicalDeviceFeatures device_features = {};
-	device_features.samplerAnisotropy = VK_TRUE;
-	device_features.vertexPipelineStoresAndAtomics = VK_TRUE;
+	VkPhysicalDeviceRayTracingFeaturesKHR drtf = {};
+	drtf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_FEATURES_KHR;
+	drtf.rayTracing = VK_TRUE;
+	VkPhysicalDeviceVulkan12Features v12f = {};
+	v12f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	v12f.bufferDeviceAddress = VK_TRUE;
+	v12f.pNext = &drtf;
+
+	VkPhysicalDeviceFeatures2 df = {};
+	df.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	df.features.samplerAnisotropy = VK_TRUE;
+	df.features.vertexPipelineStoresAndAtomics = VK_TRUE;
+	df.pNext = &v12f;
 
 	VkDeviceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+	ci.pNext = &df;
 	ci.pQueueCreateInfos = qcis.data();
 	ci.queueCreateInfoCount = static_cast<uint32_t>(qcis.size());
-	ci.pEnabledFeatures = &device_features;
+	ci.pEnabledFeatures = nullptr;
 
 	ci.enabledExtensionCount = static_cast<uint32_t>(m_device_extensions.size());
 	ci.ppEnabledExtensionNames = m_device_extensions.data();
@@ -1410,13 +1425,18 @@ VkShaderModule BaseApplication::create_shader_module(const std::string &file_nam
 {
 	shaderc_compile_options_t opts = shaderc_compile_options_initialize();
 	shaderc_compile_options_set_optimization_level(opts, shaderc_optimization_level_size);
+	shaderc_compile_options_set_target_env(opts, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+	shaderc_compile_options_set_target_spirv(opts, shaderc_spirv_version_1_4);
 
 	shaderc_compilation_result_t result = shaderc_compile_into_spv(m_shader_compiler,
 		code.data(), code.size(), shader_kind, file_name.c_str(), "main", opts);
 	
 	if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
+		
+		fprintf(stdout, "SHADERC COMPILE ERROR\n%s", shaderc_result_get_error_message(result));
 		shaderc_compile_options_release(opts);
 		shaderc_result_release(result);
+
 		throw std::runtime_error("failed to compile shader");
 	}
 
@@ -1500,10 +1520,16 @@ void BaseApplication::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
 
 	VkMemoryRequirements mem_req;
 	vkGetBufferMemoryRequirements(m_device, buffer, &mem_req);
+	VkMemoryAllocateFlagsInfo mafi = {};
+	mafi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+	mafi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 	VkMemoryAllocateInfo ai = {};
 	ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	ai.allocationSize = mem_req.size;
 	ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, props);
+	if (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
+		ai.pNext = &mafi;
+	}
 
 	res = vkAllocateMemory(m_device, &ai, nullptr, &memory);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
@@ -1766,8 +1792,14 @@ void BaseApplication::create_spheres()
 			glm::vec3 center = glm::vec3(scale*a + scale *rgen(), scale*b + scale*rgen(), -0.6f);
 			float radius = 0.1f * rgen();
 			// compute aabb
-			sphere.aabb_min = center - glm::vec3(radius);
-			sphere.aabb_max = center + glm::vec3(radius);
+			glm::vec3 aabb_min = center - glm::vec3(radius);
+			glm::vec3 aabb_max = center + glm::vec3(radius);
+			sphere.bbox.minX = aabb_min.x;
+			sphere.bbox.minY = aabb_min.y;
+			sphere.bbox.minZ = aabb_min.z;
+			sphere.bbox.maxX = aabb_max.x;
+			sphere.bbox.maxY = aabb_max.y;
+			sphere.bbox.maxZ = aabb_max.z;
 			sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
 			sphere.material = rgen() > 0.85f ? 1 : 0;
 			m_sphere_primitives.push_back(sphere);
@@ -1798,8 +1830,12 @@ void BaseApplication::create_vertex_buffer()
 	std::memcpy(data, m_model_vertices.data(), bufsize);
 	vkUnmapMemory(m_device, staging_memory);
 
-	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_vertex_buffer_memory);
+	create_buffer(bufsize, 
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | 
+		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | 
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_vertex_buffer_memory);
 	copy_buffer(staging_buffer, m_vertex_buffer, bufsize);
 
 	vkDestroyBuffer(m_device, staging_buffer, nullptr);
@@ -1821,8 +1857,12 @@ void BaseApplication::create_index_buffer()
 	std::memcpy(data, m_model_indices.data(), bufsize);
 	vkUnmapMemory(m_device, staging_mem);
 
-	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_index_buffer, m_index_buffer_memory);
+	create_buffer(bufsize, 
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | 
+		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | 
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_index_buffer, m_index_buffer_memory);
 	copy_buffer(staging_buf, m_index_buffer, bufsize);
 
 	vkDestroyBuffer(m_device, staging_buf, nullptr);
@@ -1858,8 +1898,11 @@ void BaseApplication::create_sphere_buffer()
 	std::memcpy(data, m_sphere_primitives.data(), bufsize);
 	vkUnmapMemory(m_device, staging_memory);
 
-	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-				  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sphere_buffer, m_sphere_buffer_memory);
+	create_buffer(bufsize, 
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sphere_buffer, m_sphere_buffer_memory);
 	copy_buffer(staging_buffer, m_sphere_buffer, bufsize);
 
 	vkDestroyBuffer(m_device, staging_buffer, nullptr);
@@ -1873,56 +1916,40 @@ void BaseApplication::create_bottom_acceleration_structure()
 		indices.graphics_family.value(),
 	};
 
-	VkGeometryTrianglesNV trias = {};
-	trias.sType = VK_STRUCTURE_TYPE_GEOMETRY_TRIANGLES_NV;
-	trias.indexCount = uint32_t(m_model_indices.size());
-	trias.indexData = m_index_buffer;
-	trias.indexOffset = 0;
-	trias.indexType = VK_INDEX_TYPE_UINT32;
-	trias.vertexCount = uint32_t(m_model_vertices.size());
-	trias.vertexData = m_vertex_buffer;
-	trias.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-	trias.vertexOffset = 0;
-	trias.vertexStride = sizeof(Vertex);
-	trias.transformData = VK_NULL_HANDLE;
+	VkAccelerationStructureCreateGeometryTypeInfoKHR si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_GEOMETRY_TYPE_INFO_KHR;
+	si.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+	si.maxPrimitiveCount = m_model_indices.size() / 3;
+	si.indexType = VK_INDEX_TYPE_UINT32;
+	si.maxVertexCount = m_model_vertices.size();
+	si.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	si.allowsTransforms = VK_FALSE;
 
-	VkGeometryNV g = {};
-	
-	g.sType = VK_STRUCTURE_TYPE_GEOMETRY_NV;
-	g.flags = VK_GEOMETRY_OPAQUE_BIT_NV;
-	g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_NV;
-	g.geometry.triangles = trias;
-	g.geometry.aabbs.sType = VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV;
-	g.geometry.aabbs.numAABBs = 0;
+	VkAccelerationStructureCreateInfoKHR ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+	ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	ci.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	ci.maxGeometryCount = 1;
+	ci.pGeometryInfos = &si;
 
-	VkAccelerationStructureInfoNV si = {};
-	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-	si.instanceCount = 0;
-	si.geometryCount = 1;
-	si.pGeometries = &g;
-	si.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
-
-	VkAccelerationStructureCreateInfoNV ci = {};
-	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
-	ci.info = si;
-
-	auto res = vkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_bottom_as.structure);
+	auto res = vkCreateAccelerationStructureKHR(m_device, &ci, nullptr, &m_bottom_as.structure);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
 	
 	// allocate scratch
 	{
 		VkMemoryRequirements2 mem_req = {};
 		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
-		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		VkAccelerationStructureMemoryRequirementsInfoKHR ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_KHR;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_KHR;
 		ri.accelerationStructure = m_bottom_as.structure;
-		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		ri.buildType = VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR;
+		vkGetAccelerationStructureMemoryRequirementsKHR(m_device, &ri, &mem_req);
 	
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.size = mem_req.memoryRequirements.size;
-		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		bi.pQueueFamilyIndices = qidx;
 		bi.queueFamilyIndexCount = 1;
@@ -1931,8 +1958,12 @@ void BaseApplication::create_bottom_acceleration_structure()
 
 		VkMemoryRequirements buf_mem_req = {};
 		vkGetBufferMemoryRequirements(m_device, m_bottom_as.scratch_buffer, &buf_mem_req);
+		VkMemoryAllocateFlagsInfo mafi = {};
+		mafi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+		mafi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.pNext = &mafi;
 		ai.allocationSize = buf_mem_req.size;
 		ai.memoryTypeIndex = find_memory_type(buf_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.scratch_memory);
@@ -1943,15 +1974,16 @@ void BaseApplication::create_bottom_acceleration_structure()
 		fprintf(stdout, "BOTTOM AS: needed scratch memory %" PRIu64 " MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
-	// allocate scratch
+	// allocate structure
 	{
 		VkMemoryRequirements2 mem_req = {};
 		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
-		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		VkAccelerationStructureMemoryRequirementsInfoKHR ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_KHR;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_KHR;
 		ri.accelerationStructure = m_bottom_as.structure;
-		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		ri.buildType = VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR;
+		vkGetAccelerationStructureMemoryRequirementsKHR(m_device, &ri, &mem_req);
 		
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1961,24 +1993,68 @@ void BaseApplication::create_bottom_acceleration_structure()
 		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as.memory);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
 
-		VkBindAccelerationStructureMemoryInfoNV bi = {};
-		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		VkBindAccelerationStructureMemoryInfoKHR bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_KHR;
 		bi.accelerationStructure = m_bottom_as.structure;
 		bi.memory = m_bottom_as.memory;
 		bi.memoryOffset = 0;
 		bi.deviceIndexCount = 0;
 
-		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		res = vkBindAccelerationStructureMemoryKHR(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
 		fprintf(stdout, "BOTTOM AS: needed structure memory %" PRIu64 " MB\n", mem_req.memoryRequirements.size / 1024 / 1024);
 	}
 
-	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
-	
-	vkCmdBuildAccelerationStructureNV(cmd_buf, &si, VK_NULL_HANDLE, 0,
-									  VK_FALSE, m_bottom_as.structure, VK_NULL_HANDLE,
-									  m_bottom_as.scratch_buffer, 0);
+	// build as
 
+	VkBufferDeviceAddressInfo bdai = {};
+	bdai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	bdai.buffer = m_index_buffer;
+	VkDeviceAddress index_buf_address = vkGetBufferDeviceAddress(m_device, &bdai);
+	bdai.buffer = m_vertex_buffer;
+	VkDeviceAddress vertex_buf_address = vkGetBufferDeviceAddress(m_device, &bdai);
+	bdai.buffer = m_bottom_as.scratch_buffer;
+	VkDeviceAddress scratch_buf_address = vkGetBufferDeviceAddress(m_device, &bdai);
+
+	VkAccelerationStructureGeometryTrianglesDataKHR trias = {};
+	trias.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+	trias.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	trias.vertexData.deviceAddress = vertex_buf_address;
+	trias.vertexStride = sizeof(Vertex);
+	trias.indexType = VK_INDEX_TYPE_UINT32;
+	trias.indexData.deviceAddress = index_buf_address;
+	trias.transformData.deviceAddress = VK_NULL_HANDLE;
+
+	VkAccelerationStructureGeometryKHR g = {};
+	g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+	g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+	g.geometry.triangles = trias;
+
+	VkAccelerationStructureBuildGeometryInfoKHR bgi = {};
+	bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+	bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	bgi.update = VK_FALSE;
+	bgi.srcAccelerationStructure = VK_NULL_HANDLE;
+	bgi.dstAccelerationStructure = m_bottom_as.structure;
+	bgi.geometryArrayOfPointers = VK_TRUE;
+	bgi.geometryCount = 1;
+	const VkAccelerationStructureGeometryKHR *geometries[] = { &g };
+	bgi.ppGeometries = geometries;
+	bgi.scratchData.deviceAddress = scratch_buf_address;
+	
+	VkAccelerationStructureBuildOffsetInfoKHR boi = {};
+	boi.firstVertex = 0;
+	boi.primitiveCount = m_model_indices.size() / 3;
+	boi.primitiveOffset = 0;
+	boi.transformOffset = 0;
+	
+	VkAccelerationStructureBuildOffsetInfoKHR build_offsets[] = { boi };
+	const VkAccelerationStructureBuildOffsetInfoKHR* build_offsets2[] = { build_offsets };
+
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	vkCmdBuildAccelerationStructureKHR(cmd_buf, 1, &bgi, build_offsets2);
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
@@ -1989,50 +2065,36 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 		indices.graphics_family.value(),
 	};
 
-	VkGeometryAABBNV spheres = {};
-	spheres.sType = VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV;
-	spheres.aabbData = m_sphere_buffer;
-	spheres.numAABBs = uint32_t(m_sphere_primitives.size());
-	spheres.stride = sizeof(SpherePrimitive);
-	spheres.offset = offsetof(SpherePrimitive, aabb_min);
+	VkAccelerationStructureCreateGeometryTypeInfoKHR si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_GEOMETRY_TYPE_INFO_KHR;
+	si.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+	si.maxPrimitiveCount = uint32_t(m_sphere_primitives.size());
 
-	VkGeometryNV g = {};
-	g.sType = VK_STRUCTURE_TYPE_GEOMETRY_NV;
-	g.flags = VK_GEOMETRY_OPAQUE_BIT_NV;
-	g.geometryType = VK_GEOMETRY_TYPE_AABBS_NV;
-	g.geometry.aabbs = spheres;
-	g.geometry.triangles.sType = VK_STRUCTURE_TYPE_GEOMETRY_TRIANGLES_NV;
-	g.geometry.triangles.vertexCount = 0;
-	//g.geometry.triangles.indexCount = 0;
-	
-	VkAccelerationStructureInfoNV si = {};
-	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-	si.instanceCount = 0;
-	si.geometryCount = 1;
-	si.pGeometries = &g;
-	si.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
+	VkAccelerationStructureCreateInfoKHR ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+	ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	ci.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	ci.maxGeometryCount = 1;
+	ci.pGeometryInfos = &si;
 
-	VkAccelerationStructureCreateInfoNV ci = {};
-	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
-	ci.info = si;
-
-	auto res = vkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_bottom_as_spheres.structure);
+	auto res = vkCreateAccelerationStructureKHR(m_device, &ci, nullptr, &m_bottom_as_spheres.structure);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
 	
 	// allocate scratch
 	{
 		VkMemoryRequirements2 mem_req = {};
 		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
-		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		VkAccelerationStructureMemoryRequirementsInfoKHR ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_KHR;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_KHR;
 		ri.accelerationStructure = m_bottom_as_spheres.structure;
-		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		ri.buildType = VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR;
+		vkGetAccelerationStructureMemoryRequirementsKHR(m_device, &ri, &mem_req);
 	
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.size = mem_req.memoryRequirements.size;
-		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		bi.pQueueFamilyIndices = qidx;
 		bi.queueFamilyIndexCount = 1;
@@ -2041,8 +2103,12 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 
 		VkMemoryRequirements buf_mem_req = {};
 		vkGetBufferMemoryRequirements(m_device, m_bottom_as_spheres.scratch_buffer, &buf_mem_req);
+		VkMemoryAllocateFlagsInfo mafi = {};
+		mafi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+		mafi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.pNext = &mafi;
 		ai.allocationSize = buf_mem_req.size;
 		ai.memoryTypeIndex = find_memory_type(buf_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as_spheres.scratch_memory);
@@ -2057,11 +2123,12 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 	{
 		VkMemoryRequirements2 mem_req = {};
 		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
-		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		VkAccelerationStructureMemoryRequirementsInfoKHR ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_KHR;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_KHR;
 		ri.accelerationStructure = m_bottom_as_spheres.structure;
-		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		ri.buildType = VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR;
+		vkGetAccelerationStructureMemoryRequirementsKHR(m_device, &ri, &mem_req);
 		
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -2071,24 +2138,60 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 		res = vkAllocateMemory(m_device, &ai, nullptr, &m_bottom_as_spheres.memory);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
 
-		VkBindAccelerationStructureMemoryInfoNV bi = {};
-		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		VkBindAccelerationStructureMemoryInfoKHR bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_KHR;
 		bi.accelerationStructure = m_bottom_as_spheres.structure;
 		bi.memory = m_bottom_as_spheres.memory;
 		bi.memoryOffset = 0;
 		bi.deviceIndexCount = 0;
 
-		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		res = vkBindAccelerationStructureMemoryKHR(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
 		fprintf(stdout, "BOTTOM AS: needed structure memory %.3f MB\n", mem_req.memoryRequirements.size / 1024.0f / 1024.0f);
 	}
 
-	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
-	
-	vkCmdBuildAccelerationStructureNV(cmd_buf, &si, VK_NULL_HANDLE, 0,
-									  VK_FALSE, m_bottom_as_spheres.structure, VK_NULL_HANDLE,
-									  m_bottom_as_spheres.scratch_buffer, 0);
+	// build as
 
+	VkBufferDeviceAddressInfo bdai = {};
+	bdai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	bdai.buffer = m_sphere_buffer;
+	VkDeviceAddress spheres_buf_address = vkGetBufferDeviceAddress(m_device, &bdai);
+	bdai.buffer = m_bottom_as_spheres.scratch_buffer;
+	VkDeviceAddress scratch_buf_address = vkGetBufferDeviceAddress(m_device, &bdai);
+
+	VkAccelerationStructureGeometryAabbsDataKHR aabbs = {};
+	aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+	aabbs.data.deviceAddress = spheres_buf_address + offsetof(SpherePrimitive, bbox);
+	aabbs.stride = sizeof(SpherePrimitive);
+
+	VkAccelerationStructureGeometryKHR g = {};
+	g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+	g.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+	g.geometry.aabbs = aabbs;
+
+	VkAccelerationStructureBuildGeometryInfoKHR bgi = {};
+	bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+	bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	bgi.update = VK_FALSE;
+	bgi.srcAccelerationStructure = VK_NULL_HANDLE;
+	bgi.dstAccelerationStructure = m_bottom_as_spheres.structure;
+	bgi.geometryArrayOfPointers = VK_TRUE;
+	bgi.geometryCount = 1;
+	const VkAccelerationStructureGeometryKHR* geometries[] = { &g };
+	bgi.ppGeometries = geometries;
+	bgi.scratchData.deviceAddress = scratch_buf_address;
+
+	VkAccelerationStructureBuildOffsetInfoKHR boi = {};
+	boi.primitiveCount = m_sphere_primitives.size();
+	boi.primitiveOffset = 0;
+
+	VkAccelerationStructureBuildOffsetInfoKHR build_offsets[] = { boi };
+	const VkAccelerationStructureBuildOffsetInfoKHR* build_offsets2[] = { build_offsets };
+
+	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	vkCmdBuildAccelerationStructureKHR(cmd_buf, 1, &bgi, build_offsets2);
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
@@ -2099,33 +2202,35 @@ void BaseApplication::create_top_acceleration_structure()
 		indices.graphics_family.value(),
 	};
 
-	VkAccelerationStructureInfoNV si = {};
-	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-	si.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
-	si.instanceCount = 2;
-	si.geometryCount = 0;
+	VkAccelerationStructureCreateGeometryTypeInfoKHR si = {};
+	si.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_GEOMETRY_TYPE_INFO_KHR;
+	si.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+	si.maxPrimitiveCount = 2;
+	
+	VkAccelerationStructureCreateInfoKHR ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+	ci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	ci.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	ci.maxGeometryCount = 1;
+	ci.pGeometryInfos = &si;
 
-	VkAccelerationStructureCreateInfoNV ci = {};
-	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
-	ci.info = si;
-
-	auto res = vkCreateAccelerationStructureNV(m_device, &ci, nullptr, &m_top_as.structure);
+	auto res = vkCreateAccelerationStructureKHR(m_device, &ci, nullptr, &m_top_as.structure);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create acceleration structure");
 
 	// allocate scratch
 	{
 		VkMemoryRequirements2 mem_req = {};
 		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
-		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		VkAccelerationStructureMemoryRequirementsInfoKHR ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_KHR;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_KHR;
 		ri.accelerationStructure = m_top_as.structure;
-		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		vkGetAccelerationStructureMemoryRequirementsKHR(m_device, &ri, &mem_req);
 		
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.size = mem_req.memoryRequirements.size;
-		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		bi.pQueueFamilyIndices = qidx;
 		bi.queueFamilyIndexCount = 1;
@@ -2134,8 +2239,12 @@ void BaseApplication::create_top_acceleration_structure()
 
 		VkMemoryRequirements buf_mem_req = {};
 		vkGetBufferMemoryRequirements(m_device, m_top_as.scratch_buffer, &buf_mem_req);
+		VkMemoryAllocateFlagsInfo mafi = {};
+		mafi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+		mafi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.pNext = &mafi;
 		ai.allocationSize = buf_mem_req.size;
 		ai.memoryTypeIndex = find_memory_type(buf_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
@@ -2151,11 +2260,11 @@ void BaseApplication::create_top_acceleration_structure()
 	{
 		VkMemoryRequirements2 mem_req = {};
 		mem_req.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-		VkAccelerationStructureMemoryRequirementsInfoNV ri = {};
-		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		VkAccelerationStructureMemoryRequirementsInfoKHR ri = {};
+		ri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_KHR;
+		ri.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_KHR;
 		ri.accelerationStructure = m_top_as.structure;
-		vkGetAccelerationStructureMemoryRequirementsNV(m_device, &ri, &mem_req);
+		vkGetAccelerationStructureMemoryRequirementsKHR(m_device, &ri, &mem_req);
 
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -2165,24 +2274,24 @@ void BaseApplication::create_top_acceleration_structure()
 		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.memory);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
 
-		VkBindAccelerationStructureMemoryInfoNV bi = {};
-		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		VkBindAccelerationStructureMemoryInfoKHR bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_KHR;
 		bi.accelerationStructure = m_top_as.structure;
 		bi.memory = m_top_as.memory;
 		bi.memoryOffset = 0;
 		bi.deviceIndexCount = 0;
 
-		res = vkBindAccelerationStructureMemoryNV(m_device, 1, &bi);
+		res = vkBindAccelerationStructureMemoryKHR(m_device, 1, &bi);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind acceleration structure memory");
 		fprintf(stdout, "TOP AS: needed structure memory %.3f MB\n", mem_req.memoryRequirements.size / 1024.0f / 1024.0f);
 	}
 
 	// configure instances
 	{
-		VkDeviceSize sz = 2 * sizeof(VkGeometryInstanceNV);
+		VkDeviceSize sz = 2 * sizeof(VkAccelerationStructureInstanceKHR);
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_NV;
+		bi.usage = VK_BUFFER_USAGE_RAY_TRACING_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 		bi.size = sz;
 		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		bi.queueFamilyIndexCount = 1;
@@ -2192,55 +2301,96 @@ void BaseApplication::create_top_acceleration_structure()
 
 		VkMemoryRequirements mem_req;
 		vkGetBufferMemoryRequirements(m_device, m_top_as.instances, &mem_req);
+		VkMemoryAllocateFlagsInfo mafi = {};
+		mafi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+		mafi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 		VkMemoryAllocateInfo ai = {};
 		ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		ai.pNext = &mafi;
 		ai.allocationSize = mem_req.size;
-		ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 		res = vkAllocateMemory(m_device, &ai, nullptr, &m_top_as.instances_memory);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
 		res = vkBindBufferMemory(m_device, m_top_as.instances, m_top_as.instances_memory, 0);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to bind buffer memory");
 
-		uint64_t bottom_as_gpu_handle;
-		res = vkGetAccelerationStructureHandleNV(m_device, m_bottom_as.structure, sizeof(uint64_t), &bottom_as_gpu_handle);
-		if (res != VK_SUCCESS) throw std::runtime_error("failed to get triangles' acceleration structure gpu handle");
+		VkAccelerationStructureDeviceAddressInfoKHR dai = {};
+		dai.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+		dai.accelerationStructure = m_bottom_as.structure;
+		VkDeviceAddress bottom_as_gpu_address = vkGetAccelerationStructureDeviceAddressKHR(m_device, &dai);
 
 		uint64_t spheres_as_gpu_handle;
-		res = vkGetAccelerationStructureHandleNV(m_device, m_bottom_as_spheres.structure, sizeof(uint64_t), &spheres_as_gpu_handle);
-		if (res != VK_SUCCESS) throw std::runtime_error("failed to get spheres' acceleration structure gpu handle");
+		dai.accelerationStructure = m_bottom_as_spheres.structure;
+		VkDeviceAddress spheres_as_gpu_address = vkGetAccelerationStructureDeviceAddressKHR(m_device, &dai);
 
-		VkGeometryInstanceNV *instance_ptr;
+		VkAccelerationStructureInstanceKHR* instance_ptr;
 		res = vkMapMemory(m_device, m_top_as.instances_memory, 0, sz, 0, (void**)&instance_ptr);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to map buffer");
 		glm::mat4 transform = glm::mat4(1.0f);
 		transform = glm::transpose(transform);
 		{
-			memcpy(instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
+			memcpy(&instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
 			instance_ptr->instanceCustomIndex = 0;
 			instance_ptr->mask = 0xFF;
 			instance_ptr->flags = 0;
-			instance_ptr->instanceOffset = 0;
-			instance_ptr->accelerationStructureHandle = bottom_as_gpu_handle;
+			instance_ptr->instanceShaderBindingTableRecordOffset = 0;
+			instance_ptr->accelerationStructureReference = bottom_as_gpu_address;
 		}
 		instance_ptr++;
 		{
-			memcpy(instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
+			memcpy(&instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
 			instance_ptr->instanceCustomIndex = 1;
 			instance_ptr->mask = 0xFF; 
 			instance_ptr->flags = 0;
-			instance_ptr->instanceOffset = 2; // here we set 2 because we have shade/shadow shaders for the first instance
-			instance_ptr->accelerationStructureHandle = spheres_as_gpu_handle;
+			instance_ptr->instanceShaderBindingTableRecordOffset = 2; // here we set 2 because we have shade/shadow shaders for the first instance
+			instance_ptr->accelerationStructureReference = spheres_as_gpu_address;
 		}
 		vkUnmapMemory(m_device, m_top_as.instances_memory);
 	}
 
+	VkBufferDeviceAddressInfo bdai = {};
+	bdai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	bdai.buffer = m_top_as.instances;
+	VkDeviceAddress instances_buf_address = vkGetBufferDeviceAddress(m_device, &bdai);
+	bdai.buffer = m_top_as.scratch_buffer;
+	VkDeviceAddress scratch_buf_address = vkGetBufferDeviceAddress(m_device, &bdai);
+	
+	// build as
+	VkAccelerationStructureGeometryInstancesDataKHR instances = {};
+	instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+	instances.arrayOfPointers = VK_FALSE;
+	instances.data.deviceAddress = instances_buf_address;
+
+	VkAccelerationStructureGeometryKHR g = {};
+	g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+	g.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+	g.geometry.instances = instances;
+
+	VkAccelerationStructureBuildGeometryInfoKHR bgi = {};
+	bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+	bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	bgi.update = VK_FALSE;
+	bgi.srcAccelerationStructure = VK_NULL_HANDLE;
+	bgi.dstAccelerationStructure = m_top_as.structure;
+	bgi.geometryArrayOfPointers = VK_TRUE;
+	bgi.geometryCount = 1;
+	const VkAccelerationStructureGeometryKHR* geometries[] = { &g };
+	bgi.ppGeometries = geometries;
+	bgi.scratchData.deviceAddress = scratch_buf_address;
+
+	VkAccelerationStructureBuildOffsetInfoKHR boi = {};
+	boi.primitiveCount = 2;
+	boi.primitiveOffset = 0;
+
+	VkAccelerationStructureBuildOffsetInfoKHR build_offsets[] = { boi };
+	const VkAccelerationStructureBuildOffsetInfoKHR* build_offsets2[] = { build_offsets };
+
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
-
-	vkCmdBuildAccelerationStructureNV(cmd_buf, &si, m_top_as.instances, 0,
-									   VK_FALSE, m_top_as.structure, VK_NULL_HANDLE,
-									   m_top_as.scratch_buffer, 0);
-
+	vkCmdBuildAccelerationStructureKHR(cmd_buf, 1, &bgi, build_offsets2);
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
@@ -2249,50 +2399,50 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	VkDescriptorSetLayoutBinding lb_0 = {};
 	lb_0.binding = 0;
 	lb_0.descriptorCount = 1;
-	lb_0.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
-	lb_0.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV | VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_0.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	lb_0.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_0.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_1 = {};
 	lb_1.binding = 1;
 	lb_1.descriptorCount = 1;
 	lb_1.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	lb_1.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 	lb_1.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_2;
 	lb_2.binding = 2;
 	lb_2.descriptorCount = 1;
 	lb_2.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	lb_2.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV | VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_2.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_2.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_3 = {};
 	lb_3.binding = 3;
 	lb_3.descriptorCount = 1;
 	lb_3.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_3.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_3.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_3.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_4 = {};
 	lb_4.binding = 4;
 	lb_4.descriptorCount = 1;
 	lb_4.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_4.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_4.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_4.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_5 = {};
 	lb_5.binding = 5;
 	lb_5.descriptorCount = 1;
 	lb_5.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	lb_5.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_5.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_5.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_6 = {};
 	lb_6.binding = 6;
 	lb_6.descriptorCount = 1;
 	lb_6.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_6.stageFlags = VK_SHADER_STAGE_INTERSECTION_BIT_NV | VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	lb_6.stageFlags = VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_6.pImmutableSamplers = nullptr;
 
 	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
@@ -2335,106 +2485,112 @@ void BaseApplication::create_raytracing_pipeline()
 
 	VkPipelineShaderStageCreateInfo rgci = {};
 	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	rgci.stage = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+	rgci.stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 	rgci.module = raygen_module;
 	rgci.pName = "main";
 
 	VkPipelineShaderStageCreateInfo chci = {};
 	chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	chci.module = chit_module;
 	chci.pName = "main";
 
 	VkPipelineShaderStageCreateInfo mci = {};
 	mci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	mci.stage = VK_SHADER_STAGE_MISS_BIT_NV;
+	mci.stage = VK_SHADER_STAGE_MISS_BIT_KHR;
 	mci.module = miss_module;
 	mci.pName = "main";
 
 	VkPipelineShaderStageCreateInfo shadow_chci = {};
 	shadow_chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	shadow_chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	shadow_chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	shadow_chci.module = shadow_chit_module;
 	shadow_chci.pName = "main";
 
 	VkPipelineShaderStageCreateInfo shadow_mci = {};
 	shadow_mci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	shadow_mci.stage = VK_SHADER_STAGE_MISS_BIT_NV;
+	shadow_mci.stage = VK_SHADER_STAGE_MISS_BIT_KHR;
 	shadow_mci.module = shadow_miss_module;
 	shadow_mci.pName = "main";
 
 	VkPipelineShaderStageCreateInfo sphere_ici = {};
 	sphere_ici.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	sphere_ici.stage = VK_SHADER_STAGE_INTERSECTION_BIT_NV;
+	sphere_ici.stage = VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
 	sphere_ici.module = sphere_int_module;
 	sphere_ici.pName = "main";
 
 	VkPipelineShaderStageCreateInfo sphere_chci = {};
 	sphere_chci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	sphere_chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+	sphere_chci.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	sphere_chci.module = sphere_chit_module;
 	sphere_chci.pName = "main";
 
 	std::array<VkPipelineShaderStageCreateInfo, 7> stages = { rgci, chci, mci, shadow_chci, shadow_mci, sphere_ici, sphere_chci };
 
-	std::array<VkRayTracingShaderGroupCreateInfoNV, 6> groups = {};
+	std::array<VkRayTracingShaderGroupCreateInfoKHR, 6> groups = {};
 
 	// raygen group
-	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[0].generalShader = 0;
-	groups[0].closestHitShader = VK_SHADER_UNUSED_NV;
-	groups[0].anyHitShader = VK_SHADER_UNUSED_NV;
-	groups[0].intersectionShader = VK_SHADER_UNUSED_NV;
+	groups[0].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[0].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[0].intersectionShader = VK_SHADER_UNUSED_KHR;
 	// hitgroup
-	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
-	groups[1].generalShader = VK_SHADER_UNUSED_NV;
+	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+	groups[1].generalShader = VK_SHADER_UNUSED_KHR;
 	groups[1].closestHitShader = 1;
-	groups[1].anyHitShader = VK_SHADER_UNUSED_NV;
-	groups[1].intersectionShader = VK_SHADER_UNUSED_NV;
+	groups[1].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[1].intersectionShader = VK_SHADER_UNUSED_KHR;
 	// shadow hitgroup
-	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
-	groups[2].generalShader = VK_SHADER_UNUSED_NV;
+	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+	groups[2].generalShader = VK_SHADER_UNUSED_KHR;
 	groups[2].closestHitShader = 3;
-	groups[2].anyHitShader = VK_SHADER_UNUSED_NV;
-	groups[2].intersectionShader = VK_SHADER_UNUSED_NV;
+	groups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
 	// sphere hit group
-	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_NV;
-	groups[3].generalShader = VK_SHADER_UNUSED_NV;
+	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;
+	groups[3].generalShader = VK_SHADER_UNUSED_KHR;
 	groups[3].closestHitShader = 6;
-	groups[3].anyHitShader = VK_SHADER_UNUSED_NV;
+	groups[3].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[3].intersectionShader = 5;
 	// miss group
-	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[4].generalShader = 2;
-	groups[4].closestHitShader = VK_SHADER_UNUSED_NV;
-	groups[4].anyHitShader = VK_SHADER_UNUSED_NV;
-	groups[4].intersectionShader = VK_SHADER_UNUSED_NV;
+	groups[4].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[4].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[4].intersectionShader = VK_SHADER_UNUSED_KHR;
 	// shadow miss group
-	groups[5].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+	groups[5].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[5].generalShader = 4;
-	groups[5].closestHitShader = VK_SHADER_UNUSED_NV;
-	groups[5].anyHitShader = VK_SHADER_UNUSED_NV;
-	groups[5].intersectionShader = VK_SHADER_UNUSED_NV;
+	groups[5].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[5].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[5].intersectionShader = VK_SHADER_UNUSED_KHR;
 
-	VkRayTracingPipelineCreateInfoNV ci = {};
-	ci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
+	VkPipelineLibraryCreateInfoKHR libci = {};
+	libci.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR;
+	libci.libraryCount = 0;
+
+	VkRayTracingPipelineCreateInfoKHR ci = {};
+	ci.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
 	ci.flags = 0;
 	ci.stageCount = uint32_t(stages.size());
 	ci.pStages = stages.data();
 	ci.groupCount = uint32_t(groups.size());
 	ci.pGroups = groups.data();
 	ci.maxRecursionDepth = 4;
+	ci.libraries = libci;
+	ci.pLibraryInterface = nullptr;
 	ci.layout = m_rt_pipeline_layout;
 	ci.basePipelineHandle = VK_NULL_HANDLE;
 	ci.basePipelineIndex = 0;
 
-	auto res = vkCreateRayTracingPipelinesNV(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
+	auto res = vkCreateRayTracingPipelinesKHR(m_device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_rt_pipeline);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create a raytracing pipeline");
 
 	vkDestroyShaderModule(m_device, raygen_module, nullptr);
@@ -2539,7 +2695,7 @@ void BaseApplication::create_rt_image()
 	barrier.subresourceRange.baseArrayLayer = 0;
 	barrier.subresourceRange.layerCount = 1;
 	VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-	VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_NV;
+	VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
 	barrier.srcAccessMask = 0;
 	barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
@@ -2560,7 +2716,7 @@ void BaseApplication::create_descriptor_pool()
 	// rt descriptors 
 	ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	ps[2].descriptorCount = imgs_count;
-	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 	ps[3].descriptorCount = imgs_count;
 	ps[4].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	ps[4].descriptorCount = 2*imgs_count;
@@ -2641,8 +2797,8 @@ void BaseApplication::create_rt_descriptor_sets()
 		ii.imageView = m_rt_img_view;
 		ii.sampler = nullptr;
 		
-		VkWriteDescriptorSetAccelerationStructureNV dw_rt = {};
-		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_NV;
+		VkWriteDescriptorSetAccelerationStructureKHR dw_rt = {};
+		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 		dw_rt.accelerationStructureCount = 1;
 		dw_rt.pAccelerationStructures = &m_top_as.structure;
 
@@ -2677,7 +2833,7 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw[0].dstSet = m_rt_desc_sets[i];
 		dw[0].dstBinding = 0;
 		dw[0].dstArrayElement = 0;
-		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+		dw[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 		dw[0].descriptorCount = 1;
 		dw[0].pNext = &dw_rt;
 
@@ -2736,7 +2892,7 @@ void BaseApplication::create_rt_descriptor_sets()
 
 void BaseApplication::create_shader_binding_table()
 {
-	VkPhysicalDeviceRayTracingPropertiesNV props = vk_helpers::get_raytracing_properties(m_gpu);
+	VkPhysicalDeviceRayTracingPropertiesKHR props = vk_helpers::get_raytracing_properties(m_gpu);
 	
 	fprintf(stdout, "group handle size %u\n", props.shaderGroupHandleSize);
 	fprintf(stdout, "group base alignment %u\n", props.shaderGroupBaseAlignment);
@@ -2748,7 +2904,7 @@ void BaseApplication::create_shader_binding_table()
 	VkDeviceSize sz = (group_count+duplicate_count) * 64;
 	VkDeviceSize stride = 64;
 
-	create_buffer(sz, VK_BUFFER_USAGE_RAY_TRACING_BIT_NV, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, m_rt_sbt, m_rt_sbt_memory);
+	create_buffer(sz, VK_BUFFER_USAGE_RAY_TRACING_BIT_KHR, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, m_rt_sbt, m_rt_sbt_memory);
 
 	uint8_t *data;
 	auto res = vkMapMemory(m_device, m_rt_sbt_memory, 0, VK_WHOLE_SIZE, 0, (void**)&data);
@@ -2759,7 +2915,7 @@ void BaseApplication::create_shader_binding_table()
 	}
 
 	ShaderGroupHandle handles[group_count];
-	vkGetRayTracingShaderGroupHandlesNV(m_device, m_rt_pipeline, 0, group_count, sizeof(ShaderGroupHandle) * group_count, handles);
+	vkGetRayTracingShaderGroupHandlesKHR(m_device, m_rt_pipeline, 0, group_count, sizeof(ShaderGroupHandle) * group_count, handles);
 	std::memcpy(data, &handles[0], sizeof(ShaderGroupHandle));
 	data += 64;
 	// hit groups
@@ -2932,13 +3088,24 @@ void BaseApplication::create_rt_command_buffers()
 			0, VK_ACCESS_SHADER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
-		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline);
-		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, m_rt_pipeline_layout,
+		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline);
+		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline_layout,
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
-		vkCmdTraceRaysNV(m_rt_cmd_buffers[i],
+#if 0
+		vkCmdTraceRaysKHR(m_rt_cmd_buffers[i],
 			/*raygen sbt*/ m_rt_sbt, 0,
 			/*miss sbt*/   m_rt_sbt, 320, 64,
 			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
+
+#endif
+		VkStridedBufferRegionKHR raygen_region = { m_rt_sbt, 0, 64, 64 };
+		VkStridedBufferRegionKHR hitgroup_region = { m_rt_sbt,(1*64), 64, (4*64) };
+		VkStridedBufferRegionKHR miss_region = { m_rt_sbt, (1*64) + (4*64), 64, 2*64 };
+		VkStridedBufferRegionKHR callable_region = { VK_NULL_HANDLE, 0, 0, 0 };
+		vkCmdTraceRaysKHR(m_rt_cmd_buffers[i],
+			&raygen_region, &miss_region, &hitgroup_region, &callable_region,
+			m_width, m_height, 1);
+
 
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
 			0, VK_ACCESS_TRANSFER_WRITE_BIT,
