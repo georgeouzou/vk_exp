@@ -331,6 +331,7 @@ ASALocalRun/
 
 # IGNORE build folders
 build*/
+.clangd/
 
 
 # ignore cmake settings
