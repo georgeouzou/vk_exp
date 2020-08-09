@@ -913,6 +913,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		features.features.vertexPipelineStoresAndAtomics &&
 		features.features.samplerAnisotropy &&
 		rt_features.rayTracing &&
+		rt_features.rayQuery &&
 		v12_features.bufferDeviceAddress;
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
@@ -975,6 +976,7 @@ void BaseApplication::create_logical_device()
 	VkPhysicalDeviceRayTracingFeaturesKHR drtf = {};
 	drtf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_FEATURES_KHR;
 	drtf.rayTracing = VK_TRUE;
+	drtf.rayQuery = VK_TRUE;
 	VkPhysicalDeviceVulkan12Features v12f = {};
 	v12f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	v12f.bufferDeviceAddress = VK_TRUE;
@@ -1238,7 +1240,7 @@ void BaseApplication::create_descriptor_set_layout()
 	lb.binding = 0;
 	lb.descriptorCount = 1;
 	lb.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	lb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	lb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 	lb.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding sb = {};
@@ -1248,8 +1250,15 @@ void BaseApplication::create_descriptor_set_layout()
 	sb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	sb.pImmutableSamplers = nullptr;
 
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
-		lb, sb
+    VkDescriptorSetLayoutBinding lb_2 = {};
+    lb_2.binding = 2;
+    lb_2.descriptorCount = 1;
+    lb_2.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    lb_2.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    lb_2.pImmutableSamplers = nullptr;
+
+	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+		lb, sb, lb_2
 	};
 
 	VkDescriptorSetLayoutCreateInfo li = {};
@@ -1427,7 +1436,7 @@ VkShaderModule BaseApplication::create_shader_module(const std::string &file_nam
 	shaderc_compile_options_t opts = shaderc_compile_options_initialize();
 	shaderc_compile_options_set_optimization_level(opts, shaderc_optimization_level_size);
 	shaderc_compile_options_set_target_env(opts, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
-	shaderc_compile_options_set_target_spirv(opts, shaderc_spirv_version_1_4);
+    shaderc_compile_options_set_target_spirv(opts, shaderc_spirv_version_1_5);
 
 	shaderc_compilation_result_t result = shaderc_compile_into_spv(m_shader_compiler,
 		code.data(), code.size(), shader_kind, file_name.c_str(), "main", opts);
@@ -2718,7 +2727,7 @@ void BaseApplication::create_descriptor_pool()
 	ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	ps[2].descriptorCount = imgs_count;
 	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-	ps[3].descriptorCount = imgs_count;
+	ps[3].descriptorCount = 2*imgs_count;
 	ps[4].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	ps[4].descriptorCount = 2*imgs_count;
 	
@@ -2751,12 +2760,18 @@ void BaseApplication::create_descriptor_sets()
 		bi.buffer = m_uni_buffers[i];
 		bi.offset = 0;
 		bi.range = sizeof(GlobalUniforms);
+
 		VkDescriptorImageInfo ii = {};
 		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		ii.imageView = m_texture_img_view;
 		ii.sampler = m_texture_sampler;
 
-		std::array<VkWriteDescriptorSet, 2> dw = {};
+        VkWriteDescriptorSetAccelerationStructureKHR dw_rt = {};
+		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+		dw_rt.accelerationStructureCount = 1;
+		dw_rt.pAccelerationStructures = &m_top_as.structure;
+
+		std::array<VkWriteDescriptorSet, 3> dw = {};
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_desc_sets[i];
 		dw[0].dstBinding = 0;
@@ -2772,10 +2787,17 @@ void BaseApplication::create_descriptor_sets()
 		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		dw[1].descriptorCount = 1;
 		dw[1].pImageInfo = &ii;
+
+        dw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		dw[2].dstSet = m_desc_sets[i];
+		dw[2].dstBinding = 2;
+		dw[2].dstArrayElement = 0;
+		dw[2].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+		dw[2].descriptorCount = 1;
+		dw[2].pNext = &dw_rt;
 		
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
-
 }
 
 void BaseApplication::create_rt_descriptor_sets()
@@ -3273,7 +3295,6 @@ int main()
 
 	return EXIT_SUCCESS;
 }
-
 
 
 
