@@ -15,6 +15,8 @@ set(EXTERN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern")
 set(SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(MODELS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models")
 
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/shader_dir.h.in" "${CMAKE_CURRENT_SOURCE_DIR}/src/shader_dir.h" @ONLY)
+
 set(src 
 	src/main.cpp 
 	src/stb_image.c
@@ -69,15 +71,6 @@ else()
 	target_link_directories(${app} PRIVATE $ENV{VULKAN_SDK}/lib)
 	target_link_libraries(${app} shaderc_shared)
 endif()
-
-# copy shaders to executable
-
-add_custom_command(TARGET ${app} POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
-	COMMAND ${CMAKE_COMMAND} -E copy_directory
-		${SHADER_DIR}
-		"$<TARGET_FILE_DIR:${app}>/resources"
-)
 
 # copy models to executable
 

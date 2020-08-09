@@ -339,3 +339,5 @@ build*/
 CMakeSettings.json
 compile_commands.json
 
+#ignore config file
+src/shader_dir.h

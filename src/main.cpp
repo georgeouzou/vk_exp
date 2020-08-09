@@ -29,6 +29,7 @@
 
 #include "stb_image.h"
 #include "orbit_camera.h"
+#include "shader_dir.h"
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 #define ENABLE_VALIDATION_LAYERS
@@ -1272,8 +1273,8 @@ void BaseApplication::create_descriptor_set_layout()
 void BaseApplication::create_graphics_pipeline()
 {
 	// 1. Shader modules
-	auto vert_code = read_file("resources/simple.vert");
-	auto frag_code = read_file("resources/simple.frag");
+	auto vert_code = read_file(SHADER_DIR "simple.vert");
+	auto frag_code = read_file(SHADER_DIR "simple.frag");
 	auto vert_module = create_shader_module("simple.vert", shaderc_vertex_shader, vert_code);
 	auto frag_module = create_shader_module("simple.frag", shaderc_fragment_shader, frag_code);
 
@@ -2485,13 +2486,13 @@ void BaseApplication::create_raytracing_pipeline_layout()
 void BaseApplication::create_raytracing_pipeline()
 {
 	// raygen
-	auto raygen_module = create_shader_module("simple.rgen", shaderc_raygen_shader, read_file("resources/simple.rgen"));
-	auto chit_module = create_shader_module("simple.rchit", shaderc_closesthit_shader, read_file("resources/simple.rchit"));
-	auto miss_module = create_shader_module("simple.rmiss", shaderc_miss_shader, read_file("resources/simple.rmiss"));
-	auto shadow_chit_module = create_shader_module("shadow.rchit", shaderc_closesthit_shader, read_file("resources/shadow.rchit"));
-	auto shadow_miss_module = create_shader_module("shadow.rmiss", shaderc_miss_shader, read_file("resources/shadow.rmiss"));
-	auto sphere_int_module = create_shader_module("sphere.rint", shaderc_intersection_shader, read_file("resources/sphere.rint"));
-	auto sphere_chit_module = create_shader_module("sphere.rchit", shaderc_closesthit_shader, read_file("resources/sphere.rchit"));
+	auto raygen_module = create_shader_module("simple.rgen", shaderc_raygen_shader, read_file(SHADER_DIR "simple.rgen"));
+	auto chit_module = create_shader_module("simple.rchit", shaderc_closesthit_shader, read_file(SHADER_DIR "simple.rchit"));
+	auto miss_module = create_shader_module("simple.rmiss", shaderc_miss_shader, read_file(SHADER_DIR "simple.rmiss"));
+	auto shadow_chit_module = create_shader_module("shadow.rchit", shaderc_closesthit_shader, read_file(SHADER_DIR "shadow.rchit"));
+	auto shadow_miss_module = create_shader_module("shadow.rmiss", shaderc_miss_shader, read_file(SHADER_DIR "shadow.rmiss"));
+	auto sphere_int_module = create_shader_module("sphere.rint", shaderc_intersection_shader, read_file(SHADER_DIR "sphere.rint"));
+	auto sphere_chit_module = create_shader_module("sphere.rchit", shaderc_closesthit_shader, read_file(SHADER_DIR "sphere.rchit"));
 
 	VkPipelineShaderStageCreateInfo rgci = {};
 	rgci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

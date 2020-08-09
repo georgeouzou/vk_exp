@@ -42,5 +42,5 @@ void main()
     bool in_shadow = rayQueryGetIntersectionTypeEXT(ray_query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
     const float ambient = 0.1;
 	const float lighting = (in_shadow) ? ambient : max(ambient, dot(hit_normal, to_light));
-	out_color = lighting * color;
+	out_color = lighting * color; 
 }

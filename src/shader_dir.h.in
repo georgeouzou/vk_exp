@@ -1,0 +1,6 @@
+#ifndef SHADER_DIR_H
+#define SHADER_DIR_H
+
+#define SHADER_DIR "@SHADER_DIR@/"
+
+#endif
