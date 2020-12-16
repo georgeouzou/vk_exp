@@ -1,20 +1,17 @@
 # vk_exp
 
-Experimenting with vulkan basics and the new raytracing capabilities of NVIDIA RTX.
+Experimenting with vulkan basics and ray tracing features
 
 Based on
 - https://vulkan-tutorial.com/ 
-- https://developer.nvidia.com/rtx/raytracing/dxr/DX12-Raytracing-tutorial-Part-1
+- the vulkan spec
 
-and whatever i can figure out by reading the Vulkan spec.
-
-To run you need to have an RTX capable gpu and the latest beta driver from NVIDIA that supports
-VK_KHR_ray_tracing
+To run you need to have a gpu that supports the latest vulkan KHR raytracing
 
 ## Licenses and Open Source Software
 
 The code uses the following dependencies:
-* Latest vulkan sdk (supporting VK_KHR_raytracing)
+* Latest vulkan sdk (supporting VK_KHR_raytracing_pipeline)
 * [TinyObjLoader](https://github.com/syoyo/tinyobjloader-c/blob/master/README.md)
 * [stb_image.h](https://github.com/nothings/stb/blob/master/stb_image.h)
 * [glfw](https://github.com/glfw/glfw)

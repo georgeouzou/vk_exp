@@ -30,7 +30,6 @@ set_property(TARGET ${app} PROPERTY CXX_STANDARD 17)
 if (WIN32)
 	add_definitions(-DVK_USE_PLATFORM_WIN32_KHR)
 endif()
-add_definitions(-DVK_ENABLE_BETA_EXTENSIONS)
 
 # glfw
 
