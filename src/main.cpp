@@ -27,6 +27,7 @@
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
 
+#include "vma.h"
 #include "stb_image.h"
 #include "orbit_camera.h"
 #include "shader_dir.h"
@@ -199,7 +200,9 @@ private:
 	QueueFamilyIndices find_queue_families(VkPhysicalDevice gpu) const;
 
 	void create_logical_device();
-	
+
+	void create_allocator();
+
 	void create_surface();
 	
 	SwapchainSupportDetails query_swapchain_support(VkPhysicalDevice gpu) const;
@@ -299,6 +302,8 @@ private:
 	VkQueue m_present_queue{ VK_NULL_HANDLE };
 	VkQueue m_transfer_queue{ VK_NULL_HANDLE };
 	
+	VmaAllocator m_allocator{ VK_NULL_HANDLE };
+
 	VkSurfaceKHR m_surface{ VK_NULL_HANDLE };
 
 	VkSwapchainKHR m_swapchain{ VK_NULL_HANDLE };
@@ -594,7 +599,9 @@ void BaseApplication::init_vulkan()
 
 	pick_gpu();
 	create_logical_device();
-	
+
+	create_allocator();
+
 	create_command_pools();
 	create_sync_objects();
 
@@ -635,8 +642,6 @@ void BaseApplication::init_vulkan()
 
 	create_command_buffers();
 	create_rt_command_buffers();
-
-	
 }
 
 void BaseApplication::recreate_swapchain()
@@ -754,7 +759,11 @@ void BaseApplication::cleanup()
 		vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
 		vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
 	}
-	
+
+	if (m_allocator) {
+		vmaDestroyAllocator(m_allocator);
+	}
+
 	if (m_device) {
 		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 			vkDestroyFence(m_device, m_fen_flight[i], nullptr);
@@ -1051,6 +1060,46 @@ void BaseApplication::create_logical_device()
 	vkGetDeviceQueue(m_device, family_indices.graphics_family.value(), 0, &m_graphics_queue);
 	vkGetDeviceQueue(m_device, family_indices.present_family.value(), 0, &m_present_queue);
 	vkGetDeviceQueue(m_device, family_indices.transfer_family.value(), 0, &m_transfer_queue);
+}
+
+void BaseApplication::create_allocator()
+{
+	// we use volk so we need to provide their functions to vma 
+	VmaVulkanFunctions funcs = {};
+	funcs.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
+	funcs.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
+	funcs.vkAllocateMemory = vkAllocateMemory;
+	funcs.vkFreeMemory = vkFreeMemory;
+	funcs.vkMapMemory = vkMapMemory;
+	funcs.vkUnmapMemory = vkUnmapMemory;
+	funcs.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
+	funcs.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges;
+	funcs.vkBindBufferMemory = vkBindBufferMemory;
+	funcs.vkBindImageMemory = vkBindImageMemory;
+	funcs.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
+	funcs.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements;
+	funcs.vkCreateBuffer = vkCreateBuffer;
+	funcs.vkDestroyBuffer = vkDestroyBuffer;
+	funcs.vkCreateImage = vkCreateImage;
+	funcs.vkDestroyImage = vkDestroyImage;
+	funcs.vkCmdCopyBuffer = vkCmdCopyBuffer;
+	funcs.vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2KHR;
+	funcs.vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2KHR;
+	funcs.vkBindBufferMemory2KHR = vkBindBufferMemory2KHR;
+	funcs.vkBindImageMemory2KHR = vkBindImageMemory2KHR;
+	funcs.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2KHR;
+
+	VmaAllocatorCreateInfo ai = {};
+	ai.vulkanApiVersion = VK_API_VERSION_1_2;
+	ai.physicalDevice = m_gpu;
+	ai.device = m_device;
+	ai.instance = m_instance;
+	ai.pVulkanFunctions = &funcs;
+
+	auto res = vmaCreateAllocator(&ai, &m_allocator);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("could not create vma allocator");
+	}
 }
 
 void BaseApplication::create_surface()
@@ -1977,7 +2026,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 	geom_trias.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
 	geom_trias.vertexStride = sizeof(Vertex);
 	geom_trias.indexType = VK_INDEX_TYPE_UINT32;
-	geom_trias.maxVertex = m_model_vertices.size() - 1;
+	geom_trias.maxVertex = uint32_t(m_model_vertices.size()) - 1;
 	// for now 
 	geom_trias.vertexData.deviceAddress = 0;
 	geom_trias.indexData.deviceAddress = 0;
@@ -1995,7 +2044,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 	build_info.dstAccelerationStructure = VK_NULL_HANDLE;
 	build_info.scratchData.deviceAddress = 0;
 
-	const uint32_t max_primitive_counts[1] = { m_model_indices.size() / 3 };
+	const uint32_t max_primitive_counts[1] = { uint32_t(m_model_indices.size()) / 3 };
 
 	// get the needed sizes for the buffers
 	VkAccelerationStructureBuildSizesInfoKHR sizes = {};
