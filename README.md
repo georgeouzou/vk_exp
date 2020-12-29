@@ -14,6 +14,7 @@ The code uses the following dependencies:
 * Latest vulkan sdk (supporting VK_KHR_raytracing_pipeline)
 * [TinyObjLoader](https://github.com/syoyo/tinyobjloader-c/blob/master/README.md)
 * [stb_image.h](https://github.com/nothings/stb/blob/master/stb_image.h)
+* [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
 * [glfw](https://github.com/glfw/glfw)
 * [glm](https://github.com/g-truc/glm)
 * [volk](https://github.com/zeux/volk)
