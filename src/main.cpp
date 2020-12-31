@@ -43,6 +43,30 @@ struct ShaderGroupHandle
 	uint64_t i3;
 };
 
+struct VmaBufferAllocation
+{
+	VmaAllocation alloc{ VK_NULL_HANDLE };
+	VkBuffer buffer{ VK_NULL_HANDLE };
+};
+
+struct ASBuffers
+{
+	VkAccelerationStructureKHR structure{ VK_NULL_HANDLE };
+	VmaBufferAllocation structure_buffer;
+	VmaBufferAllocation scratch_buffer;
+	VmaBufferAllocation instances_buffer;
+	
+	void destroy(VkDevice device, VmaAllocator allocator)
+	{
+		if (structure) vkDestroyAccelerationStructureKHR(device, structure, nullptr);
+		vmaDestroyBuffer(allocator, structure_buffer.buffer, structure_buffer.alloc);
+		vmaDestroyBuffer(allocator, scratch_buffer.buffer, scratch_buffer.alloc);
+		vmaDestroyBuffer(allocator, instances_buffer.buffer, instances_buffer.alloc);
+		std::memset(this, VK_NULL_HANDLE, sizeof(ASBuffers));
+	}
+};
+
+
 struct QueueFamilyIndices
 {
 	std::optional<uint32_t> graphics_family;
@@ -148,28 +172,6 @@ struct GlobalUniforms
 	glm::vec4 light_pos;
 };
 
-struct ASBuffers
-{
-	VkAccelerationStructureKHR structure{ VK_NULL_HANDLE };
-	VkBuffer structure_buffer{ VK_NULL_HANDLE };
-	VkDeviceMemory structure_memory{ VK_NULL_HANDLE };
-	VkBuffer scratch_buffer{ VK_NULL_HANDLE };
-	VkDeviceMemory scratch_memory{ VK_NULL_HANDLE };
-	VkBuffer instances{ VK_NULL_HANDLE };
-	VkDeviceMemory instances_memory{ VK_NULL_HANDLE };
-
-	void destroy(VkDevice device)
-	{
-		if (structure) vkDestroyAccelerationStructureKHR(device, structure, nullptr);
-		vkDestroyBuffer(device, scratch_buffer, nullptr);
-		vkDestroyBuffer(device, instances, nullptr);
-		vkDestroyBuffer(device, structure_buffer, nullptr);
-		vkFreeMemory(device, structure_memory, nullptr);
-		vkFreeMemory(device, scratch_memory, nullptr);
-		vkFreeMemory(device, instances_memory, nullptr);
-		std::memset(this, VK_NULL_HANDLE, sizeof(ASBuffers));
-	}
-};
 
 class BaseApplication
 {
@@ -223,7 +225,7 @@ private:
 	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
 	
 	void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
-					   VkMemoryPropertyFlags props, VkBuffer &buffer, VkDeviceMemory &memory);
+					   VkMemoryPropertyFlags props, VmaBufferAllocation &buffer);
 	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 	
 	void create_image(uint32_t width, uint32_t height, VkFormat format,
@@ -330,25 +332,20 @@ private:
 	std::vector<uint32_t> m_model_indices;
 	std::vector<SpherePrimitive> m_sphere_primitives;
 
-	VkBuffer m_vertex_buffer{ VK_NULL_HANDLE };
-	VkDeviceMemory m_vertex_buffer_memory{ VK_NULL_HANDLE };
-	VkBuffer m_index_buffer{ VK_NULL_HANDLE };
-	VkDeviceMemory m_index_buffer_memory{ VK_NULL_HANDLE };
-	VkBuffer m_sphere_buffer{ VK_NULL_HANDLE };
-	VkDeviceMemory m_sphere_buffer_memory{ VK_NULL_HANDLE };
-
+	VmaBufferAllocation m_vertex_buffer;
+	VmaBufferAllocation m_index_buffer;
+	VmaBufferAllocation m_sphere_buffer;
+	
 	ASBuffers m_bottom_as_spheres;
 	ASBuffers m_bottom_as;
 	ASBuffers m_top_as;
 	VkImage m_rt_img{ VK_NULL_HANDLE };
 	VkDeviceMemory m_rt_img_memory{ VK_NULL_HANDLE };
 	VkImageView m_rt_img_view{ VK_NULL_HANDLE };
-	VkBuffer m_rt_sbt{ VK_NULL_HANDLE };
+	VmaBufferAllocation m_rt_sbt;
 	VkDeviceAddress m_rt_sbt_address;
-	VkDeviceMemory m_rt_sbt_memory{ VK_NULL_HANDLE };
-
-	std::vector<VkBuffer> m_uni_buffers;
-	std::vector<VkDeviceMemory> m_uni_buffer_memory;
+	
+	std::vector<VmaBufferAllocation> m_uni_buffers;
 
 	VkImage m_texture_img{ VK_NULL_HANDLE };
 	VkDeviceMemory m_texture_img_memory{ VK_NULL_HANDLE };
@@ -687,13 +684,11 @@ void BaseApplication::main_loop()
 void BaseApplication::cleanup_swapchain()
 {
 	if (!m_device) return;
-	for (auto b : m_uni_buffers) {
-		vkDestroyBuffer(m_device, b, nullptr);	
-	}
-	for (auto m : m_uni_buffer_memory) {
-		vkFreeMemory(m_device, m, nullptr);
-	}
 
+	for (auto b : m_uni_buffers) {
+		vmaDestroyBuffer(m_allocator, b.buffer, b.alloc);
+	}
+	
 	// no need to free desc sets because we destroy the pool
 	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
 	
@@ -706,7 +701,6 @@ void BaseApplication::cleanup_swapchain()
 		vkDestroyFramebuffer(m_device, fb, nullptr);
 	}
 	
-
 	if (m_graphics_pipeline) vkDestroyPipeline(m_device, m_graphics_pipeline, nullptr);
 	if (m_descriptor_set_layout) vkDestroyDescriptorSetLayout(m_device, m_descriptor_set_layout, nullptr);
 	if (m_pipeline_layout) vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
@@ -721,7 +715,6 @@ void BaseApplication::cleanup_swapchain()
 	vkDestroyImage(m_device, m_rt_img, nullptr);
 	vkFreeMemory(m_device, m_rt_img_memory, nullptr);
 	
-
 	for (auto img_view : m_swapchain_img_views) {
 		vkDestroyImageView(m_device, img_view, nullptr);
 	}
@@ -732,21 +725,12 @@ void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
 
-	// cleanup raytracing stuff
+	
 	if (m_device) {
-		vkDestroyBuffer(m_device, m_rt_sbt, nullptr);
-		vkFreeMemory(m_device, m_rt_sbt_memory, nullptr);
+		// cleanup raytracing stuff
 		vkDestroyDescriptorSetLayout(m_device, m_rt_descriptor_set_layout, nullptr);
 		vkDestroyPipelineLayout(m_device, m_rt_pipeline_layout, nullptr);
 		vkDestroyPipeline(m_device, m_rt_pipeline, nullptr);
-		m_top_as.destroy(m_device);
-		m_bottom_as.destroy(m_device);
-		m_bottom_as_spheres.destroy(m_device);
-	}
-
-	if (m_device) {
-		vkDestroyBuffer(m_device, m_sphere_buffer, nullptr);
-		vkFreeMemory(m_device, m_sphere_buffer_memory, nullptr);
 	}
 
 	if (m_device) {
@@ -754,13 +738,16 @@ void BaseApplication::cleanup()
 		vkDestroyImageView(m_device, m_texture_img_view, nullptr);
 		vkDestroyImage(m_device, m_texture_img, nullptr);
 		vkFreeMemory(m_device, m_texture_img_memory, nullptr);
-		vkDestroyBuffer(m_device, m_index_buffer, nullptr);
-		vkFreeMemory(m_device, m_index_buffer_memory, nullptr);
-		vkDestroyBuffer(m_device, m_vertex_buffer, nullptr);
-		vkFreeMemory(m_device, m_vertex_buffer_memory, nullptr);
 	}
 
-	if (m_allocator) {
+	if (m_device && m_allocator) {
+		vmaDestroyBuffer(m_allocator, m_index_buffer.buffer, m_index_buffer.alloc);
+		vmaDestroyBuffer(m_allocator, m_vertex_buffer.buffer, m_vertex_buffer.alloc);
+		vmaDestroyBuffer(m_allocator, m_sphere_buffer.buffer, m_sphere_buffer.alloc);
+		vmaDestroyBuffer(m_allocator, m_rt_sbt.buffer, m_rt_sbt.alloc);
+		m_top_as.destroy(m_device, m_allocator);
+		m_bottom_as.destroy(m_device, m_allocator);
+		m_bottom_as_spheres.destroy(m_device, m_allocator);
 		vmaDestroyAllocator(m_allocator);
 	}
 
@@ -1083,11 +1070,11 @@ void BaseApplication::create_allocator()
 	funcs.vkCreateImage = vkCreateImage;
 	funcs.vkDestroyImage = vkDestroyImage;
 	funcs.vkCmdCopyBuffer = vkCmdCopyBuffer;
-	funcs.vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2KHR;
-	funcs.vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2KHR;
-	funcs.vkBindBufferMemory2KHR = vkBindBufferMemory2KHR;
-	funcs.vkBindImageMemory2KHR = vkBindImageMemory2KHR;
-	funcs.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2KHR;
+	funcs.vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2;
+	funcs.vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2;
+	funcs.vkBindBufferMemory2KHR = vkBindBufferMemory2;
+	funcs.vkBindImageMemory2KHR = vkBindImageMemory2;
+	funcs.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2;
 
 	VmaAllocatorCreateInfo ai = {};
 	ai.vulkanApiVersion = VK_API_VERSION_1_2;
@@ -1095,7 +1082,7 @@ void BaseApplication::create_allocator()
 	ai.device = m_device;
 	ai.instance = m_instance;
 	ai.pVulkanFunctions = &funcs;
-
+	ai.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 	auto res = vmaCreateAllocator(&ai, &m_allocator);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("could not create vma allocator");
@@ -1598,7 +1585,7 @@ uint32_t BaseApplication::find_memory_type(uint32_t type_filter, VkMemoryPropert
 
 void BaseApplication::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
 									VkMemoryPropertyFlags props, 
-									VkBuffer &buffer, VkDeviceMemory &memory)
+									VmaBufferAllocation &buffer)
 {
 	auto indices = find_queue_families(m_gpu);
 	uint32_t qidx[] = {
@@ -1611,29 +1598,18 @@ void BaseApplication::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
 	bi.size = size;
 	bi.usage = usage;
 	bi.sharingMode = VK_SHARING_MODE_CONCURRENT;
-	bi.pQueueFamilyIndices = qidx;
 	bi.queueFamilyIndexCount = 2;
-
-	auto res = vkCreateBuffer(m_device, &bi, nullptr, &buffer);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to create buffer");
-
-	VkMemoryRequirements mem_req;
-	vkGetBufferMemoryRequirements(m_device, buffer, &mem_req);
-	VkMemoryAllocateFlagsInfo mafi = {};
-	mafi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-	mafi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-	VkMemoryAllocateInfo ai = {};
-	ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	ai.allocationSize = mem_req.size;
-	ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, props);
-	if (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
-		ai.pNext = &mafi;
+	bi.pQueueFamilyIndices = qidx;
+	
+	VmaAllocationCreateInfo ai = {};
+	if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+		ai.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	} else {
+		ai.usage = VMA_MEMORY_USAGE_CPU_ONLY;
 	}
 
-	res = vkAllocateMemory(m_device, &ai, nullptr, &memory);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate gpu memory");
-
-	vkBindBufferMemory(m_device, buffer, memory, 0);
+	auto res = vmaCreateBuffer(m_allocator, &bi, &ai, &buffer.buffer, &buffer.alloc, nullptr);
+	if (res != VK_SUCCESS) throw std::runtime_error("failed to create & allocate buffer");
 }
 
 void BaseApplication::copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size)
@@ -1920,17 +1896,16 @@ void BaseApplication::create_vertex_buffer()
 {
 	auto bufsize = sizeof(Vertex) * m_model_vertices.size();
 	
-	VkBuffer staging_buffer;
-	VkDeviceMemory staging_memory;
+	VmaBufferAllocation staging;
 	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 				  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-				  staging_buffer, staging_memory);
-	
+				  staging);
+
 	void *data;
-	auto res = vkMapMemory(m_device, staging_memory, 0, bufsize, 0, &data);
+	auto res = vmaMapMemory(m_allocator, staging.alloc, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
 	std::memcpy(data, m_model_vertices.data(), bufsize);
-	vkUnmapMemory(m_device, staging_memory);
+	vmaUnmapMemory(m_allocator, staging.alloc);
 
 	create_buffer(bufsize, 
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | 
@@ -1938,51 +1913,48 @@ void BaseApplication::create_vertex_buffer()
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | 
 		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer, m_vertex_buffer_memory);
-	copy_buffer(staging_buffer, m_vertex_buffer, bufsize);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer);
+	copy_buffer(staging.buffer, m_vertex_buffer.buffer, bufsize);
 
-	vkDestroyBuffer(m_device, staging_buffer, nullptr);
-	vkFreeMemory(m_device, staging_memory, nullptr);
+	vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
 }
 
 void BaseApplication::create_index_buffer()
 {
 	VkDeviceSize bufsize = sizeof(uint32_t) * m_model_indices.size();
-	VkBuffer staging_buf;
-	VkDeviceMemory staging_mem;
+	
+	VmaBufferAllocation staging;
 	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 				  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-				  staging_buf, staging_mem);
+				  staging);
 
 	void *data;
-	auto res = vkMapMemory(m_device, staging_mem, 0, bufsize, 0, &data);
+	auto res = vmaMapMemory(m_allocator, staging.alloc, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
 	std::memcpy(data, m_model_indices.data(), bufsize);
-	vkUnmapMemory(m_device, staging_mem);
+	vmaUnmapMemory(m_allocator, staging.alloc);
 
-	create_buffer(bufsize, 
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | 
-		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | 
+	create_buffer(bufsize,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+		VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_index_buffer, m_index_buffer_memory);
-	copy_buffer(staging_buf, m_index_buffer, bufsize);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_index_buffer);
+	copy_buffer(staging.buffer, m_index_buffer.buffer, bufsize);
 
-	vkDestroyBuffer(m_device, staging_buf, nullptr);
-	vkFreeMemory(m_device, staging_mem, nullptr);
+	vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
 }
 
 void BaseApplication::create_uniform_buffers()
 {
 	VkDeviceSize bufsize = sizeof(GlobalUniforms);
 	m_uni_buffers.resize(m_swapchain_images.size());
-	m_uni_buffer_memory.resize(m_swapchain_images.size());
 
 	for (size_t i = 0; i < m_swapchain_images.size(); ++i) {
 		create_buffer(bufsize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-					  m_uni_buffers[i], m_uni_buffer_memory[i]);
+					  m_uni_buffers[i]);
 	}
 }
 
@@ -1990,28 +1962,26 @@ void BaseApplication::create_sphere_buffer()
 {
 	auto bufsize = sizeof(SpherePrimitive) * m_sphere_primitives.size();
 	
-	VkBuffer staging_buffer;
-	VkDeviceMemory staging_memory;
+	VmaBufferAllocation staging;
 	create_buffer(bufsize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-				  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-				  staging_buffer, staging_memory);
+		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		staging);
 	
 	void *data;
-	auto res = vkMapMemory(m_device, staging_memory, 0, bufsize, 0, &data);
+	auto res = vmaMapMemory(m_allocator, staging.alloc, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
 	std::memcpy(data, m_sphere_primitives.data(), bufsize);
-	vkUnmapMemory(m_device, staging_memory);
+	vmaUnmapMemory(m_allocator, staging.alloc);
 
-	create_buffer(bufsize, 
+	create_buffer(bufsize,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | 
+		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sphere_buffer, m_sphere_buffer_memory);
-	copy_buffer(staging_buffer, m_sphere_buffer, bufsize);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sphere_buffer);
+	copy_buffer(staging.buffer, m_sphere_buffer.buffer, bufsize);
 
-	vkDestroyBuffer(m_device, staging_buffer, nullptr);
-	vkFreeMemory(m_device, staging_memory, nullptr);
+	vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
 }
 
 void BaseApplication::create_bottom_acceleration_structure()
@@ -2059,14 +2029,14 @@ void BaseApplication::create_bottom_acceleration_structure()
 	// create all the necessary buffers
 	// structure buffer
 	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.structure_buffer, m_bottom_as.structure_memory);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.scratch_buffer, m_bottom_as.scratch_memory);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.scratch_buffer);
 
 	VkAccelerationStructureCreateInfoKHR ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-	ci.buffer = m_bottom_as.structure_buffer;
+	ci.buffer = m_bottom_as.structure_buffer.buffer;
 	ci.offset = 0;
 	ci.size = sizes.accelerationStructureSize;
 	ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -2076,12 +2046,12 @@ void BaseApplication::create_bottom_acceleration_structure()
 	
 	// build as
 	// fill all the addresses needed
-	geom_trias.vertexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_vertex_buffer);
-	geom_trias.indexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_index_buffer);
+	geom_trias.vertexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_vertex_buffer.buffer);
+	geom_trias.indexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_index_buffer.buffer);
 	geom_trias.transformData.deviceAddress = 0;
 	build_info.srcAccelerationStructure = VK_NULL_HANDLE;
 	build_info.dstAccelerationStructure = m_bottom_as.structure;
-	build_info.scratchData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_bottom_as.scratch_buffer);
+	build_info.scratchData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_bottom_as.scratch_buffer.buffer);
 
 	VkAccelerationStructureBuildRangeInfoKHR geom_range = {};
 	geom_range.firstVertex = 0;
@@ -2137,14 +2107,14 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 	// create all the necessary buffers
 	// structure buffer
 	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.structure_buffer, m_bottom_as_spheres.structure_memory);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.scratch_buffer, m_bottom_as_spheres.scratch_memory);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.scratch_buffer);
 
 	VkAccelerationStructureCreateInfoKHR ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-	ci.buffer = m_bottom_as_spheres.structure_buffer;
+	ci.buffer = m_bottom_as_spheres.structure_buffer.buffer;
 	ci.offset = 0;
 	ci.size = sizes.accelerationStructureSize;
 	ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -2153,10 +2123,10 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 
 	// build as
 	// fill all the addresses needed
-	geom_aabbs.data.deviceAddress = vk_helpers::get_buffer_address(m_device, m_sphere_buffer) + offsetof(SpherePrimitive, bbox);
+	geom_aabbs.data.deviceAddress = vk_helpers::get_buffer_address(m_device, m_sphere_buffer.buffer) + offsetof(SpherePrimitive, bbox);
 	build_info.srcAccelerationStructure = VK_NULL_HANDLE;
 	build_info.dstAccelerationStructure = m_bottom_as_spheres.structure;
-	build_info.scratchData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_bottom_as_spheres.scratch_buffer);
+	build_info.scratchData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_bottom_as_spheres.scratch_buffer.buffer);
 
 	VkAccelerationStructureBuildRangeInfoKHR geom_range = {};
 	geom_range.firstVertex = 0;
@@ -2212,14 +2182,14 @@ void BaseApplication::create_top_acceleration_structure()
 	// create all the necessary buffers
 	// structure buffer
 	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.structure_buffer, m_top_as.structure_memory);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.scratch_buffer, m_top_as.scratch_memory);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.scratch_buffer);
 
 	VkAccelerationStructureCreateInfoKHR ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-	ci.buffer = m_top_as.structure_buffer;
+	ci.buffer = m_top_as.structure_buffer.buffer;
 	ci.offset = 0;
 	ci.size = sizes.accelerationStructureSize;
 	ci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
@@ -2229,14 +2199,13 @@ void BaseApplication::create_top_acceleration_structure()
 	// create instances buffer
 	{
 		VkDeviceSize instances_size = 2 * sizeof(VkAccelerationStructureInstanceKHR);
-		VkBuffer staging_buffer;
-		VkDeviceMemory staging_memory;
+		VmaBufferAllocation staging;
 		create_buffer(instances_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-			staging_buffer, staging_memory);
+			staging);
 
 		VkAccelerationStructureInstanceKHR* instance_ptr;
-		auto res = vkMapMemory(m_device, staging_memory, 0, instances_size, 0, (void**)&instance_ptr);
+		auto res = vmaMapMemory(m_allocator, staging.alloc, (void**)&instance_ptr);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
 		glm::mat4 transform = glm::mat4(1.0f);
 		transform = glm::transpose(transform);
@@ -2257,25 +2226,24 @@ void BaseApplication::create_top_acceleration_structure()
 			instance_ptr->instanceShaderBindingTableRecordOffset = 2; // here we set 2 because we have shade/shadow shaders for the first instance
 			instance_ptr->accelerationStructureReference = vk_helpers::get_acceleration_structure_address(m_device, m_bottom_as_spheres.structure);;
 		}
-		vkUnmapMemory(m_device, staging_memory);
+		vmaUnmapMemory(m_allocator, staging.alloc);
 
 		create_buffer(instances_size,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 			VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 			VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.instances, m_top_as.instances_memory);
-		copy_buffer(staging_buffer, m_top_as.instances, instances_size);
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.instances_buffer);
+		copy_buffer(staging.buffer, m_top_as.instances_buffer.buffer, instances_size);
 
-		vkDestroyBuffer(m_device, staging_buffer, nullptr);
-		vkFreeMemory(m_device, staging_memory, nullptr);
+		vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
 	}
 
 	// build as
 	// fill all the addresses needed
-	geom_instances.data.deviceAddress = vk_helpers::get_buffer_address(m_device, m_top_as.instances);
+	geom_instances.data.deviceAddress = vk_helpers::get_buffer_address(m_device, m_top_as.instances_buffer.buffer);
 	build_info.srcAccelerationStructure = VK_NULL_HANDLE;
 	build_info.dstAccelerationStructure = m_top_as.structure;
-	build_info.scratchData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_top_as.scratch_buffer);
+	build_info.scratchData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_top_as.scratch_buffer.buffer);
 
 	VkAccelerationStructureBuildRangeInfoKHR geom_range = {};
 	geom_range.firstVertex = 0;
@@ -2509,17 +2477,16 @@ void BaseApplication::create_texture_image()
 	}
 	VkDeviceSize image_size = tex_width * tex_height * 4;
 
-	VkBuffer staging_buffer;
-	VkDeviceMemory staging_memory;
+	VmaBufferAllocation staging;
 	create_buffer(image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-				  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				  staging_buffer, staging_memory);
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		staging);
 
 	void *data;
-	auto res = vkMapMemory(m_device, staging_memory, 0, image_size, 0, &data);
+	auto res = vmaMapMemory(m_allocator, staging.alloc, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map buffer memory");
 	std::memcpy(data, pixels, size_t(image_size));
-	vkUnmapMemory(m_device, staging_memory);
+	vmaUnmapMemory(m_allocator, staging.alloc);
 
 	stbi_image_free(pixels);
 
@@ -2529,13 +2496,11 @@ void BaseApplication::create_texture_image()
 
 	transition_image_layout(m_texture_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED,
 							VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-	copy_buffer_to_image(staging_buffer, m_texture_img, tex_width, tex_height);
+	copy_buffer_to_image(staging.buffer, m_texture_img, tex_width, tex_height);
 	transition_image_layout(m_texture_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-
-	vkDestroyBuffer(m_device, staging_buffer, nullptr);
-	vkFreeMemory(m_device, staging_memory, nullptr);
+	vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
 }
 
 void BaseApplication::create_texture_image_view()
@@ -2644,7 +2609,7 @@ void BaseApplication::create_descriptor_sets()
 
 	for (size_t i = 0; i < m_desc_sets.size(); ++i) {
 		VkDescriptorBufferInfo bi = {};
-		bi.buffer = m_uni_buffers[i];
+		bi.buffer = m_uni_buffers[i].buffer;
 		bi.offset = 0;
 		bi.range = sizeof(GlobalUniforms);
 
@@ -2713,17 +2678,17 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw_rt.pAccelerationStructures = &m_top_as.structure;
 
 		VkDescriptorBufferInfo ubi = {};
-		ubi.buffer = m_uni_buffers[i];
+		ubi.buffer = m_uni_buffers[i].buffer;
 		ubi.offset = 0;
 		ubi.range = sizeof(GlobalUniforms);
 
 		VkDescriptorBufferInfo vbi = {};
-		vbi.buffer = m_vertex_buffer;
+		vbi.buffer = m_vertex_buffer.buffer;
 		vbi.offset = 0;
 		vbi.range = m_model_vertices.size() * sizeof(Vertex);
 
 		VkDescriptorBufferInfo ibi = {};
-		ibi.buffer = m_index_buffer;
+		ibi.buffer = m_index_buffer.buffer;
 		ibi.offset = 0;
 		ibi.range = m_model_indices.size() * sizeof(uint32_t);
 
@@ -2733,7 +2698,7 @@ void BaseApplication::create_rt_descriptor_sets()
 		si.sampler = m_texture_sampler;
 
 		VkDescriptorBufferInfo spheres_bi = {};
-		spheres_bi.buffer = m_sphere_buffer;
+		spheres_bi.buffer = m_sphere_buffer.buffer;
 		spheres_bi.offset = 0;
 		spheres_bi.range = m_sphere_primitives.size() * sizeof(SpherePrimitive);
 		
@@ -2815,12 +2780,12 @@ void BaseApplication::create_shader_binding_table()
 	VkDeviceSize stride = 64;
 
 	create_buffer(sz, VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_rt_sbt, m_rt_sbt_memory);
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_rt_sbt);
 
-	m_rt_sbt_address = vk_helpers::get_buffer_address(m_device, m_rt_sbt);
+	m_rt_sbt_address = vk_helpers::get_buffer_address(m_device, m_rt_sbt.buffer);
 
 	uint8_t *data;
-	auto res = vkMapMemory(m_device, m_rt_sbt_memory, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+	auto res = vmaMapMemory(m_allocator, m_rt_sbt.alloc, (void**)&data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
 
 	if (props.shaderGroupHandleSize != sizeof(ShaderGroupHandle)) {
@@ -2850,7 +2815,7 @@ void BaseApplication::create_shader_binding_table()
 	// miss shadow
 	std::memcpy(data, &handles[5], sizeof(ShaderGroupHandle));
 
-	vkUnmapMemory(m_device, m_rt_sbt_memory);
+	vmaUnmapMemory(m_allocator, m_rt_sbt.alloc);
 }
 
 VkFormat BaseApplication::find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const
@@ -2955,10 +2920,10 @@ void BaseApplication::create_command_buffers()
 	
 		vkCmdBindPipeline(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 		
-		VkBuffer buffers[] = { m_vertex_buffer };
+		VkBuffer buffers[] = { m_vertex_buffer.buffer };
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(m_cmd_buffers[i], 0, 1, buffers, offsets);
-		vkCmdBindIndexBuffer(m_cmd_buffers[i], m_index_buffer, 0, VK_INDEX_TYPE_UINT32);
+		vkCmdBindIndexBuffer(m_cmd_buffers[i], m_index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdBindDescriptorSets(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout,
 								0, 1, &m_desc_sets[i], 0, nullptr);
 		vkCmdDrawIndexed(m_cmd_buffers[i], uint32_t(m_model_indices.size()), 1, 0 , 0, 0);
@@ -3100,10 +3065,10 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.light_pos = glm::vec4(3.0f * std::cos(time), 3 * std::sin(time), 2.0f, 1.0f);
 
 	void *data;
-	auto res = vkMapMemory(m_device, m_uni_buffer_memory[idx], 0, sizeof(GlobalUniforms), 0, &data);
+	auto res = vmaMapMemory(m_allocator, m_uni_buffers[idx].alloc, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map uniform buffer memory");
 	std::memcpy(data, &ubo, sizeof(GlobalUniforms));
-	vkUnmapMemory(m_device, m_uni_buffer_memory[idx]);
+	vmaUnmapMemory(m_allocator, m_uni_buffers[idx].alloc);
 }
 
 void BaseApplication::draw_frame()
