@@ -49,6 +49,12 @@ struct VmaBufferAllocation
 	VkBuffer buffer{ VK_NULL_HANDLE };
 };
 
+struct VmaImageAllocation
+{
+	VmaAllocation alloc{ VK_NULL_HANDLE };
+	VkImage image{ VK_NULL_HANDLE };
+};
+
 struct ASBuffers
 {
 	VkAccelerationStructureKHR structure{ VK_NULL_HANDLE };
@@ -191,7 +197,7 @@ private:
 
 	void create_instance();
 	bool check_validation_layer_support() const;
-	std::vector<const char*> get_required_extensions() const;
+	std::vector<const char*> get_required_instance_extensions() const;
 
 	void setup_debug_callback();
 	void destroy_debug_callback();
@@ -229,8 +235,8 @@ private:
 	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 	
 	void create_image(uint32_t width, uint32_t height, VkFormat format,
-					  VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags props,
-					  VkImage &img, VkDeviceMemory &img_memory);
+		VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags props,
+		VmaImageAllocation& img);
 	
 	VkCommandBuffer begin_single_time_commands(VkQueue queue, VkCommandPool cmd_pool);
 	void end_single_time_commands(VkQueue queue, VkCommandPool cmd_pool, VkCommandBuffer cmd_buffer);
@@ -315,8 +321,7 @@ private:
 	std::vector<VkImageView> m_swapchain_img_views;
 	std::vector<VkFramebuffer> m_swapchain_fbs;
 	
-	VkImage m_depth_img;
-	VkDeviceMemory m_depth_img_memory;
+	VmaImageAllocation m_depth_img;
 	VkImageView m_depth_img_view;
 
 	VkRenderPass m_render_pass{ VK_NULL_HANDLE };
@@ -339,16 +344,14 @@ private:
 	ASBuffers m_bottom_as_spheres;
 	ASBuffers m_bottom_as;
 	ASBuffers m_top_as;
-	VkImage m_rt_img{ VK_NULL_HANDLE };
-	VkDeviceMemory m_rt_img_memory{ VK_NULL_HANDLE };
+	VmaImageAllocation m_rt_img;
 	VkImageView m_rt_img_view{ VK_NULL_HANDLE };
 	VmaBufferAllocation m_rt_sbt;
 	VkDeviceAddress m_rt_sbt_address;
 	
 	std::vector<VmaBufferAllocation> m_uni_buffers;
 
-	VkImage m_texture_img{ VK_NULL_HANDLE };
-	VkDeviceMemory m_texture_img_memory{ VK_NULL_HANDLE };
+	VmaImageAllocation m_texture_img;
 	VkImageView m_texture_img_view{ VK_NULL_HANDLE };
 	VkSampler m_texture_sampler{ VK_NULL_HANDLE };
 
@@ -707,13 +710,11 @@ void BaseApplication::cleanup_swapchain()
 	if (m_render_pass) vkDestroyRenderPass(m_device, m_render_pass, nullptr);
 	
 	if (m_depth_img_view) vkDestroyImageView(m_device, m_depth_img_view, nullptr);
-	if (m_depth_img) vkDestroyImage(m_device, m_depth_img, nullptr);
-	if (m_depth_img_memory) vkFreeMemory(m_device, m_depth_img_memory, nullptr);
-
+	vmaDestroyImage(m_allocator, m_depth_img.image, m_depth_img.alloc);
+	
 	// cleanup raytracing stuff
 	vkDestroyImageView(m_device, m_rt_img_view, nullptr);
-	vkDestroyImage(m_device, m_rt_img, nullptr);
-	vkFreeMemory(m_device, m_rt_img_memory, nullptr);
+	vmaDestroyImage(m_allocator, m_rt_img.image, m_rt_img.alloc);
 	
 	for (auto img_view : m_swapchain_img_views) {
 		vkDestroyImageView(m_device, img_view, nullptr);
@@ -736,8 +737,7 @@ void BaseApplication::cleanup()
 	if (m_device) {
 		vkDestroySampler(m_device, m_texture_sampler, nullptr);
 		vkDestroyImageView(m_device, m_texture_img_view, nullptr);
-		vkDestroyImage(m_device, m_texture_img, nullptr);
-		vkFreeMemory(m_device, m_texture_img_memory, nullptr);
+		vmaDestroyImage(m_allocator, m_texture_img.image, m_texture_img.alloc);
 	}
 
 	if (m_device && m_allocator) {
@@ -787,7 +787,7 @@ void BaseApplication::create_instance()
 	ai.engineVersion = VK_MAKE_VERSION(1, 0, 0);
 	ai.apiVersion = VK_API_VERSION_1_2;
 
-	auto required_exts = get_required_extensions();
+	auto required_exts = get_required_instance_extensions();
 
 	VkInstanceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -828,7 +828,7 @@ bool BaseApplication::check_validation_layer_support() const
 	return true;
 }
 
-std::vector<const char*> BaseApplication::get_required_extensions() const
+std::vector<const char*> BaseApplication::get_required_instance_extensions() const
 {
 	uint32_t glfw_ext_count = 0;
 	const char **glfw_exts;
@@ -1628,7 +1628,7 @@ void BaseApplication::copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size)
 
 void BaseApplication::create_image(uint32_t width, uint32_t height, VkFormat format, 
 								   VkImageTiling tiling, VkImageUsageFlags usage, 
-								   VkMemoryPropertyFlags props, VkImage & img, VkDeviceMemory & img_memory)
+								   VkMemoryPropertyFlags props, VmaImageAllocation &img)
 {
 	VkImageCreateInfo ii = {};
 	ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1644,20 +1644,15 @@ void BaseApplication::create_image(uint32_t width, uint32_t height, VkFormat for
 	ii.samples = VK_SAMPLE_COUNT_1_BIT;
 	ii.flags = 0;
 
-	auto res = vkCreateImage(m_device, &ii, nullptr, &img);
+	VmaAllocationCreateInfo ai = {};
+	if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+		ai.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	} else {
+		ai.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	}
+
+	auto res = vmaCreateImage(m_allocator, &ii, &ai, &img.image, &img.alloc, nullptr);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create image");
-
-	VkMemoryRequirements mem_req;
-	vkGetImageMemoryRequirements(m_device, img, &mem_req);
-	VkMemoryAllocateInfo ai = {};
-	ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	ai.allocationSize = mem_req.size;
-	ai.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits, props);
-
-	res = vkAllocateMemory(m_device, &ai, nullptr, &img_memory);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to allocate memory");
-
-	vkBindImageMemory(m_device, img, img_memory, 0);
 }
 
 VkCommandBuffer BaseApplication::begin_single_time_commands(VkQueue queue, VkCommandPool cmd_pool)
@@ -2492,12 +2487,12 @@ void BaseApplication::create_texture_image()
 
 	create_image(tex_width, tex_height, VK_FORMAT_R8G8B8A8_UNORM,
 				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_texture_img, m_texture_img_memory);
+				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_texture_img);
 
-	transition_image_layout(m_texture_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED,
+	transition_image_layout(m_texture_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED,
 							VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-	copy_buffer_to_image(staging.buffer, m_texture_img, tex_width, tex_height);
-	transition_image_layout(m_texture_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+	copy_buffer_to_image(staging.buffer, m_texture_img.image, tex_width, tex_height);
+	transition_image_layout(m_texture_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
@@ -2505,7 +2500,7 @@ void BaseApplication::create_texture_image()
 
 void BaseApplication::create_texture_image_view()
 {
-	m_texture_img_view = vk_helpers::create_image_view_2d(m_device, m_texture_img, 
+	m_texture_img_view = vk_helpers::create_image_view_2d(m_device, m_texture_img.image,
 			VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -2537,9 +2532,9 @@ void BaseApplication::create_rt_image()
 {
 	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R8G8B8A8_UNORM,
 				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
-				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img, m_rt_img_memory);
+				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img);
 
-	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
 
 	// we do the transition with a pipeline barrier as it is needed to be done only once
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
@@ -2550,7 +2545,7 @@ void BaseApplication::create_rt_image()
 	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = m_rt_img;
+	barrier.image = m_rt_img.image;
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = 1;
@@ -2848,13 +2843,13 @@ void BaseApplication::create_depth_resources()
 	VkFormat depth_format = find_supported_depth_format();
 	create_image(m_swapchain_extent.width, m_swapchain_extent.height, depth_format,
 				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depth_img, m_depth_img_memory);
+				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depth_img);
 
-	m_depth_img_view = vk_helpers::create_image_view_2d(m_device, m_depth_img, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+	m_depth_img_view = vk_helpers::create_image_view_2d(m_device, m_depth_img.image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
 
 	// we could do the layout transition in the renderpass as the color attachment but here 
 	// we do it with a pipeline barrier as it is needed to be done only once
-	transition_image_layout(m_depth_img, depth_format,
+	transition_image_layout(m_depth_img.image, depth_format,
 							VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 }
@@ -2962,7 +2957,7 @@ void BaseApplication::create_rt_command_buffers()
 		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
 
 		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img, isr,
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
 			0, VK_ACCESS_SHADER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
@@ -2989,7 +2984,7 @@ void BaseApplication::create_rt_command_buffers()
 			0, VK_ACCESS_TRANSFER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img, isr,
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
 			VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
 			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
@@ -3001,7 +2996,7 @@ void BaseApplication::create_rt_command_buffers()
 		cpy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 
 		vkCmdCopyImage(m_rt_cmd_buffers[i],
-			m_rt_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			m_rt_img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
 
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
