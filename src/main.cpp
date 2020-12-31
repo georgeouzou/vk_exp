@@ -322,7 +322,7 @@ private:
 	std::vector<VkFramebuffer> m_swapchain_fbs;
 	
 	VmaImageAllocation m_depth_img;
-	VkImageView m_depth_img_view;
+	VkImageView m_depth_img_view{ VK_NULL_HANDLE };
 
 	VkRenderPass m_render_pass{ VK_NULL_HANDLE };
 	VkDescriptorSetLayout m_descriptor_set_layout{ VK_NULL_HANDLE };
@@ -693,23 +693,25 @@ void BaseApplication::cleanup_swapchain()
 	}
 	
 	// no need to free desc sets because we destroy the pool
-	if (m_desc_pool) vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
+	vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
 	
-	vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-		static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
-	vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-		static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
-	
+	if (m_graphics_cmd_pool) {
+		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+			static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
+		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+			static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+	}
+
 	for (auto fb : m_swapchain_fbs) {
 		vkDestroyFramebuffer(m_device, fb, nullptr);
 	}
 	
-	if (m_graphics_pipeline) vkDestroyPipeline(m_device, m_graphics_pipeline, nullptr);
-	if (m_descriptor_set_layout) vkDestroyDescriptorSetLayout(m_device, m_descriptor_set_layout, nullptr);
-	if (m_pipeline_layout) vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
-	if (m_render_pass) vkDestroyRenderPass(m_device, m_render_pass, nullptr);
+	vkDestroyPipeline(m_device, m_graphics_pipeline, nullptr);
+	vkDestroyDescriptorSetLayout(m_device, m_descriptor_set_layout, nullptr);
+	vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
+	vkDestroyRenderPass(m_device, m_render_pass, nullptr);
 	
-	if (m_depth_img_view) vkDestroyImageView(m_device, m_depth_img_view, nullptr);
+	vkDestroyImageView(m_device, m_depth_img_view, nullptr);
 	vmaDestroyImage(m_allocator, m_depth_img.image, m_depth_img.alloc);
 	
 	// cleanup raytracing stuff
@@ -719,28 +721,26 @@ void BaseApplication::cleanup_swapchain()
 	for (auto img_view : m_swapchain_img_views) {
 		vkDestroyImageView(m_device, img_view, nullptr);
 	}
-	if (m_swapchain) vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+	vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
 }
 
 void BaseApplication::cleanup()
 {
 	cleanup_swapchain();
 
-	
 	if (m_device) {
 		// cleanup raytracing stuff
 		vkDestroyDescriptorSetLayout(m_device, m_rt_descriptor_set_layout, nullptr);
 		vkDestroyPipelineLayout(m_device, m_rt_pipeline_layout, nullptr);
 		vkDestroyPipeline(m_device, m_rt_pipeline, nullptr);
-	}
-
-	if (m_device) {
+		// cleanup basic stuff
 		vkDestroySampler(m_device, m_texture_sampler, nullptr);
 		vkDestroyImageView(m_device, m_texture_img_view, nullptr);
 		vmaDestroyImage(m_allocator, m_texture_img.image, m_texture_img.alloc);
 	}
 
 	if (m_device && m_allocator) {
+		// cleanup buffers and acceleration structures
 		vmaDestroyBuffer(m_allocator, m_index_buffer.buffer, m_index_buffer.alloc);
 		vmaDestroyBuffer(m_allocator, m_vertex_buffer.buffer, m_vertex_buffer.alloc);
 		vmaDestroyBuffer(m_allocator, m_sphere_buffer.buffer, m_sphere_buffer.alloc);
@@ -757,19 +757,25 @@ void BaseApplication::cleanup()
 			vkDestroySemaphore(m_device, m_sem_img_available[i], nullptr);
 			vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
 		}
-		if (m_transfer_cmd_pool) vkDestroyCommandPool(m_device, m_transfer_cmd_pool, nullptr);
-		if (m_graphics_cmd_pool) vkDestroyCommandPool(m_device, m_graphics_cmd_pool, nullptr);
-		vkDestroyDevice(m_device, nullptr);
+		vkDestroyCommandPool(m_device, m_transfer_cmd_pool, nullptr);
+		vkDestroyCommandPool(m_device, m_graphics_cmd_pool, nullptr);
 	}
 
-	if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+	vkDestroyDevice(m_device, nullptr);
 
-	if (m_shader_compiler) shaderc_compiler_release(m_shader_compiler);
+	if (m_instance) 
+		vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+	
+	if (m_shader_compiler) 
+		shaderc_compiler_release(m_shader_compiler);
 
-	if (m_debug_callback) destroy_debug_callback();
-	if (m_instance) vkDestroyInstance(m_instance, nullptr);
+	destroy_debug_callback();
 
-	if (m_window) glfwDestroyWindow(m_window);
+	vkDestroyInstance(m_instance, nullptr);
+
+	if (m_window) 
+		glfwDestroyWindow(m_window);
+	
 	glfwTerminate();
 }
 
