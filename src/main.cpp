@@ -144,6 +144,8 @@ struct Vertex
 	}
 };
 
+static_assert(sizeof(Vertex) % 8 == 0 && "We have chosen vertices to have an alignment of 8");
+
 // implement has specialization for vertex
 namespace std
 {
@@ -172,7 +174,7 @@ struct SpherePrimitive
 	float fuzz;
 };
 
-static_assert(sizeof(SpherePrimitive) % 8 == 0);
+static_assert(sizeof(SpherePrimitive) % 8 == 0 && "We have chosen SpherePrimitives to have an alignment of 8");
 
 struct GlobalUniforms
 {
@@ -185,6 +187,43 @@ struct GlobalUniforms
 	glm::vec4 light_pos;
 };
 
+struct SBTRecordHitMesh
+{
+	ShaderGroupHandle shader;
+	VkDeviceAddress vertices_ref;
+	VkDeviceAddress indices_ref;
+};
+
+struct SBTRecordHitSphere
+{
+	ShaderGroupHandle shader;
+	VkDeviceAddress spheres_ref;
+};
+
+constexpr size_t get_sbt_hit_record_size()
+{
+	const size_t sz = std::max({sizeof(SBTRecordHitMesh), sizeof(SBTRecordHitSphere), sizeof(ShaderGroupHandle)});
+	// round up to 64
+	return ((sz + 63) / 64) * 64;
+}
+
+constexpr size_t get_sbt_miss_record_size()
+{
+	const size_t sz = sizeof(ShaderGroupHandle);
+	// round up to 64
+	return ((sz + 63) / 64) * 64;
+}
+
+constexpr size_t get_sbt_raygen_record_size()
+{
+	const size_t sz = sizeof(ShaderGroupHandle);
+	// round up to 64
+	return ((sz + 63) / 64) * 64;
+}
+
+static_assert(get_sbt_hit_record_size() == get_sbt_raygen_record_size());
+static_assert(get_sbt_hit_record_size() == get_sbt_miss_record_size());
+static_assert(get_sbt_hit_record_size() == 64);
 
 class BaseApplication
 {
@@ -1903,7 +1942,6 @@ void BaseApplication::create_vertex_buffer()
 	create_buffer(bufsize, 
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | 
 		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | 
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | 
 		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertex_buffer);
@@ -1930,7 +1968,6 @@ void BaseApplication::create_index_buffer()
 	create_buffer(bufsize,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 		VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_index_buffer);
@@ -1968,7 +2005,6 @@ void BaseApplication::create_sphere_buffer()
 
 	create_buffer(bufsize,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sphere_buffer);
@@ -2280,29 +2316,8 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_2.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_2.pImmutableSamplers = nullptr;
 
-	VkDescriptorSetLayoutBinding lb_3 = {};
-	lb_3.binding = 3;
-	lb_3.descriptorCount = 1;
-	lb_3.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_3.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-	lb_3.pImmutableSamplers = nullptr;
-
-	VkDescriptorSetLayoutBinding lb_4 = {};
-	lb_4.binding = 4;
-	lb_4.descriptorCount = 1;
-	lb_4.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_4.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-	lb_4.pImmutableSamplers = nullptr;
-
-	VkDescriptorSetLayoutBinding lb_5 = {};
-	lb_5.binding = 6;
-	lb_5.descriptorCount = 1;
-	lb_5.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_5.stageFlags = VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-	lb_5.pImmutableSamplers = nullptr;
-
-	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
-		lb_0, lb_1, lb_2, lb_3, lb_4, lb_5,
+	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+		lb_0, lb_1, lb_2
 	};
 
 	VkDescriptorSetLayoutCreateInfo sli = {};
@@ -2495,17 +2510,15 @@ void BaseApplication::create_rt_image()
 void BaseApplication::create_descriptor_pool()
 {
 	uint32_t imgs_count = (uint32_t)m_swapchain_images.size();
-	std::array<VkDescriptorPoolSize, 4> ps = {};
+	// specify bigger sizes than needed
+	std::array<VkDescriptorPoolSize, 3> ps = {};
 	ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	ps[0].descriptorCount = imgs_count;
-	// rt descriptors 
+	ps[0].descriptorCount = 2*imgs_count;
 	ps[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	ps[1].descriptorCount = imgs_count;
+	ps[1].descriptorCount = 2*imgs_count;
 	ps[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 	ps[2].descriptorCount = 2*imgs_count;
-	ps[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	ps[3].descriptorCount = 2*imgs_count;
-	
+
 	VkDescriptorPoolCreateInfo pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	pi.poolSizeCount = uint32_t(ps.size());
@@ -2592,22 +2605,7 @@ void BaseApplication::create_rt_descriptor_sets()
 		ubi.offset = 0;
 		ubi.range = sizeof(GlobalUniforms);
 
-		VkDescriptorBufferInfo vbi = {};
-		vbi.buffer = m_vertex_buffer.buffer;
-		vbi.offset = 0;
-		vbi.range = m_model_vertices.size() * sizeof(Vertex);
-
-		VkDescriptorBufferInfo ibi = {};
-		ibi.buffer = m_index_buffer.buffer;
-		ibi.offset = 0;
-		ibi.range = m_model_indices.size() * sizeof(uint32_t);
-
-		VkDescriptorBufferInfo spheres_bi = {};
-		spheres_bi.buffer = m_sphere_buffer.buffer;
-		spheres_bi.offset = 0;
-		spheres_bi.range = m_sphere_primitives.size() * sizeof(SpherePrimitive);
-		
-		std::array<VkWriteDescriptorSet, 6> dw = {};
+		std::array<VkWriteDescriptorSet, 3> dw = {};
 
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_rt_desc_sets[i];
@@ -2632,31 +2630,7 @@ void BaseApplication::create_rt_descriptor_sets()
 		dw[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		dw[2].descriptorCount = 1;
 		dw[2].pBufferInfo = &ubi;
-
-		dw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		dw[3].dstSet = m_rt_desc_sets[i];
-		dw[3].dstBinding = 3;
-		dw[3].dstArrayElement = 0;
-		dw[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		dw[3].descriptorCount = 1;
-		dw[3].pBufferInfo = &vbi;
-
-		dw[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		dw[4].dstSet = m_rt_desc_sets[i];
-		dw[4].dstBinding = 4;
-		dw[4].dstArrayElement = 0;
-		dw[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		dw[4].descriptorCount = 1;
-		dw[4].pBufferInfo = &ibi;
-
-		dw[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		dw[5].dstSet = m_rt_desc_sets[i];
-		dw[5].dstBinding = 6;
-		dw[5].dstArrayElement = 0;
-		dw[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		dw[5].descriptorCount = 1;
-		dw[5].pBufferInfo = &spheres_bi;
-		   
+   
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
 
@@ -2671,10 +2645,13 @@ void BaseApplication::create_shader_binding_table()
 	fprintf(stdout, "group max stride %u\n", props.maxShaderGroupStride);
 	fprintf(stdout, "max recursion depth %u\n", props.maxRayRecursionDepth);
 	
-	const int group_count = 6;
-	const int duplicate_count = 1;
-	VkDeviceSize sz = (group_count+duplicate_count) * 64;
-	VkDeviceSize stride = 64;
+	const uint32_t num_raygen = 1;
+	const uint32_t num_hitgroups = 4;
+	const uint32_t num_miss = 2;
+	VkDeviceSize sz =
+		num_raygen * get_sbt_raygen_record_size() +
+		num_hitgroups * get_sbt_hit_record_size() +
+		num_miss * get_sbt_miss_record_size();
 
 	create_buffer(sz, VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_rt_sbt);
@@ -2686,31 +2663,62 @@ void BaseApplication::create_shader_binding_table()
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
 
 	if (props.shaderGroupHandleSize != sizeof(ShaderGroupHandle)) {
-		throw std::runtime_error("shadergroup handle size is different than 16 bytes");
+		throw std::runtime_error("we assume at compile time that shadergroup handle size is 32 bytes");
+	}
+	if (props.shaderGroupBaseAlignment != 64) {
+		throw std::runtime_error("we assume at compile time that shadergroup base alignment is 64 bytes");
 	}
 
+	const uint32_t group_count = 6u;
 	ShaderGroupHandle handles[group_count];
 	vkGetRayTracingShaderGroupHandlesKHR(m_device, m_rt_pipeline, 0, group_count, sizeof(ShaderGroupHandle) * group_count, handles);
-	std::memcpy(data, &handles[0], sizeof(ShaderGroupHandle));
-	data += 64;
-	// hit groups
-	// triangles 
-	std::memcpy(data, &handles[1], sizeof(ShaderGroupHandle));
-	data += 64;
-	// triangles shadow
-	std::memcpy(data, &handles[2], sizeof(ShaderGroupHandle));
-	data += 64;
-	// spheres 
-	std::memcpy(data, &handles[3], sizeof(ShaderGroupHandle));
-	data += 64;
-	// spheres shadow (same as triangles)
-	std::memcpy(data, &handles[2], sizeof(ShaderGroupHandle));
-	data += 64;
-	// miss groups 
-	std::memcpy(data, &handles[4], sizeof(ShaderGroupHandle));
-	data += 64;
-	// miss shadow
-	std::memcpy(data, &handles[5], sizeof(ShaderGroupHandle));
+
+	// write raygen groups
+	{
+		ShaderGroupHandle raygen_rec = handles[0];
+		std::memcpy(data, &raygen_rec, sizeof(raygen_rec));
+		data += get_sbt_raygen_record_size();
+	}
+	// write hitgroups
+	{
+		SBTRecordHitMesh mesh_rec;
+		mesh_rec.shader = handles[1];
+		mesh_rec.vertices_ref = vk_helpers::get_buffer_address(m_device, m_vertex_buffer.buffer);
+		mesh_rec.indices_ref = vk_helpers::get_buffer_address(m_device, m_index_buffer.buffer);
+		
+		ShaderGroupHandle mesh_occlusion_rec = handles[2];
+
+		SBTRecordHitSphere spheres_rec;
+		spheres_rec.shader = handles[3];
+		spheres_rec.spheres_ref = vk_helpers::get_buffer_address(m_device, m_sphere_buffer.buffer);
+
+		ShaderGroupHandle spheres_occlusion_rec = handles[2];
+
+		// hit groups
+		// triangles 
+		std::memcpy(data, &mesh_rec, sizeof(mesh_rec));
+		data += get_sbt_hit_record_size();
+		// triangles shadow
+		std::memcpy(data, &mesh_occlusion_rec, sizeof(mesh_occlusion_rec));
+		data += get_sbt_hit_record_size();
+		// spheres
+		std::memcpy(data, &spheres_rec, sizeof(spheres_rec));
+		data += get_sbt_hit_record_size();
+		// spheres shadow (same as triangles)
+		std::memcpy(data, &spheres_occlusion_rec, sizeof(spheres_occlusion_rec));
+		data += get_sbt_hit_record_size();
+	}
+	// write miss groups
+	{
+		ShaderGroupHandle miss_rec = handles[4];
+		ShaderGroupHandle miss_occlusion_rec = handles[5];
+		// miss groups 
+		std::memcpy(data, &miss_rec, sizeof(miss_rec));
+		data += get_sbt_miss_record_size();
+		// miss shadow
+		std::memcpy(data, &miss_occlusion_rec, sizeof(miss_occlusion_rec));
+	}
+	
 
 	vmaUnmapMemory(m_allocator, m_rt_sbt.alloc);
 }
@@ -2873,9 +2881,9 @@ void BaseApplication::create_rt_command_buffers()
 			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
 
 #endif
-		const size_t raygen_stride = 64;
-		const size_t hitgroup_stride = 64;
-		const size_t miss_stride = 64;
+		const size_t raygen_stride = get_sbt_raygen_record_size();
+		const size_t hitgroup_stride = get_sbt_hit_record_size();
+		const size_t miss_stride = get_sbt_miss_record_size();
 		size_t num_raygen = 1;
 		size_t num_hitgroups = 4;
 		size_t num_miss = 2;

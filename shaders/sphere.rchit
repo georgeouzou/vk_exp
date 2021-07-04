@@ -1,5 +1,7 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
 
 struct HitPayload
 {
@@ -25,6 +27,11 @@ struct SpherePrimitive
 	float fuzz;
 };
 
+layout(buffer_reference, scalar, buffer_reference_align = 8) buffer SphereBuffer
+{
+	SpherePrimitive spheres[];
+};
+
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
 layout(binding = 2) uniform GlobalUniforms
@@ -37,10 +44,10 @@ layout(binding = 2) uniform GlobalUniforms
 	vec4 light_pos;
 } ubo;
 
-layout(std430, binding = 6) readonly buffer SpherePrimitives
+layout(shaderRecordEXT, std430) buffer ShaderRecord
 {
-	SpherePrimitive spheres[];
-};
+	SphereBuffer sphere_buffer;
+} shader_record;
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
 layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
@@ -48,7 +55,7 @@ hitAttributeEXT vec3 sphere_point;
 
 void main()
 {
-	SpherePrimitive sph = spheres[gl_PrimitiveID];
+	SpherePrimitive sph = shader_record.sphere_buffer.spheres[gl_PrimitiveID];
 	const vec3 aabb_max = vec3(sph.aabb_maxx, sph.aabb_maxy, sph.aabb_maxz);
 	const vec3 aabb_min = vec3(sph.aabb_minx, sph.aabb_miny, sph.aabb_minz);
 	const vec3 center = (aabb_max + aabb_min) / vec3(2.0);
