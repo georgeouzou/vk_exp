@@ -13,8 +13,7 @@ layout(binding = 0) uniform CameraMatrices
 	vec4 light_pos;
 } ubo;
 
-layout(set = 0, binding = 1) uniform sampler2D tex_sampler;
-layout(set = 0, binding = 2) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1) uniform accelerationStructureEXT scene;
 
 layout(location = 0) in vec3 frag_normal;
 layout(location = 1) in vec2 frag_tex_coord;
@@ -29,7 +28,7 @@ void main()
 	const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
 	const vec3 to_light = normalize(ubo.light_pos.xyz-hit_pos.xyz);
 
-	vec4 color = texture(tex_sampler, frag_tex_coord);
+	vec4 color = vec4(0.7, 0.7, 0.7, 1.0);
 
     rayQueryEXT ray_query;
     rayQueryInitializeEXT(ray_query, scene, 

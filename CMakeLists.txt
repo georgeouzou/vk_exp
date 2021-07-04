@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.7)
+cmake_minimum_required(VERSION 3.18)
 
 set(app VulkanExperiments)
 
@@ -50,13 +50,13 @@ set(GLM_DIR "${EXTERN_DIR}/glm")
 target_include_directories(${app} PRIVATE ${GLM_DIR})
 
 # tinyobjloader
-set(TINYOBJLOADER "${EXTERN_DIR}/tinyobjloader")
-target_include_directories(${app} PRIVATE ${TINYOBJLOADER})
+set(TINYOBJLOADER_DIR "${EXTERN_DIR}/tinyobjloader")
+target_include_directories(${app} PRIVATE ${TINYOBJLOADER_DIR})
 
 # volk
-set(VOLK "${EXTERN_DIR}/volk")
-add_subdirectory(${VOLK})
-target_include_directories(${app} PRIVATE ${VOLK})
+set(VOLK_DIR "${EXTERN_DIR}/volk")
+add_subdirectory(${VOLK_DIR})
+target_include_directories(${app} PRIVATE ${VOLK_DIR})
 target_link_libraries(${app} volk)
 
 # vulkan
@@ -73,8 +73,28 @@ else()
 	target_link_libraries(${app} shaderc_shared)
 endif()
 
-# copy models to executable
+# download models
+function(download_file url filepath hash_type hash)
+if(NOT EXISTS ${filepath})
+  get_filename_component(filename ${filepath} NAME_WE) 
+  message("Downloading model: ${filename}")
+ 
+  file(DOWNLOAD ${url} ${filepath}
+	   SHOW_PROGRESS
+       EXPECTED_HASH ${hash_type}=${hash})
+endif()
+endfunction(download_file)
 
+download_file(
+  https://casual-effects.com/g3d/data10/research/model/bmw/bmw.zip
+  "${MODELS_DIR}/bmw.zip"
+  SHA1 de6daa549019106df0512bc3f4dabec37d82e4b2)
+
+file(ARCHIVE_EXTRACT 
+	INPUT "${MODELS_DIR}/bmw.zip" 
+	DESTINATION ${MODELS_DIR})
+
+# copy models to executable resources
 add_custom_command(TARGET ${app} POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${app}>/resources/"
 	COMMAND ${CMAKE_COMMAND} -E copy_directory 

@@ -41,8 +41,6 @@ layout(std430, binding = 4) readonly buffer TriIndices
 	uint indices[];
 };
 
-layout(binding = 5) uniform sampler2D tex_sampler;
-
 layout(location = 0) rayPayloadInEXT HitPayload payload;
 					 hitAttributeEXT vec2 bary;
 
@@ -66,7 +64,7 @@ void main()
 				vertices[vidx2].normal.xyz * barys.z;
 	norm = normalize(norm);
 	
-	vec3 hit_color = texture(tex_sampler, texc).bgr;
+	vec3 hit_color = vec3(0.7, 0.7, 0.7);
 
 	const vec3 hit_normal = norm;
 	const vec3 hit_pos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;

@@ -259,10 +259,6 @@ private:
 	void create_raytracing_pipeline_layout();
 	void create_raytracing_pipeline();
 
-	void create_texture_image();
-	void create_texture_image_view();
-	void create_texture_sampler();
-
 	void create_rt_image();
 	void create_descriptor_pool();
 	void create_descriptor_sets();
@@ -350,10 +346,6 @@ private:
 	VkDeviceAddress m_rt_sbt_address;
 	
 	std::vector<VmaBufferAllocation> m_uni_buffers;
-
-	VmaImageAllocation m_texture_img;
-	VkImageView m_texture_img_view{ VK_NULL_HANDLE };
-	VkSampler m_texture_sampler{ VK_NULL_HANDLE };
 
 	VkDescriptorPool m_desc_pool{ VK_NULL_HANDLE };
 	std::vector<VkDescriptorSet> m_desc_sets;
@@ -624,9 +616,6 @@ void BaseApplication::init_vulkan()
 	create_vertex_buffer();
 	create_index_buffer();
 	create_uniform_buffers();
-	create_texture_image();
-	create_texture_image_view();
-	create_texture_sampler();
 
 	create_spheres();
 	create_sphere_buffer();
@@ -733,10 +722,6 @@ void BaseApplication::cleanup()
 		vkDestroyDescriptorSetLayout(m_device, m_rt_descriptor_set_layout, nullptr);
 		vkDestroyPipelineLayout(m_device, m_rt_pipeline_layout, nullptr);
 		vkDestroyPipeline(m_device, m_rt_pipeline, nullptr);
-		// cleanup basic stuff
-		vkDestroySampler(m_device, m_texture_sampler, nullptr);
-		vkDestroyImageView(m_device, m_texture_img_view, nullptr);
-		vmaDestroyImage(m_allocator, m_texture_img.image, m_texture_img.alloc);
 	}
 
 	if (m_device && m_allocator) {
@@ -1325,22 +1310,15 @@ void BaseApplication::create_descriptor_set_layout()
 	lb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 	lb.pImmutableSamplers = nullptr;
 
-	VkDescriptorSetLayoutBinding sb = {};
-	sb.binding = 1;
-	sb.descriptorCount = 1;
-	sb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	sb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	sb.pImmutableSamplers = nullptr;
+    VkDescriptorSetLayoutBinding lb_1 = {};
+    lb_1.binding = 1;
+    lb_1.descriptorCount = 1;
+    lb_1.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    lb_1.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    lb_1.pImmutableSamplers = nullptr;
 
-    VkDescriptorSetLayoutBinding lb_2 = {};
-    lb_2.binding = 2;
-    lb_2.descriptorCount = 1;
-    lb_2.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    lb_2.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    lb_2.pImmutableSamplers = nullptr;
-
-	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
-		lb, sb, lb_2
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
+		lb, lb_1
 	};
 
 	VkDescriptorSetLayoutCreateInfo li = {};
@@ -1777,7 +1755,7 @@ void BaseApplication::load_model()
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
 	std::string warn, err;
-	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/pythagoras.obj")) {
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/bmw.obj")) {
 		throw std::runtime_error(warn + err);
 	}
 
@@ -2298,21 +2276,14 @@ void BaseApplication::create_raytracing_pipeline_layout()
 	lb_4.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding lb_5 = {};
-	lb_5.binding = 5;
+	lb_5.binding = 6;
 	lb_5.descriptorCount = 1;
-	lb_5.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	lb_5.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	lb_5.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lb_5.stageFlags = VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	lb_5.pImmutableSamplers = nullptr;
 
-	VkDescriptorSetLayoutBinding lb_6 = {};
-	lb_6.binding = 6;
-	lb_6.descriptorCount = 1;
-	lb_6.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lb_6.stageFlags = VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-	lb_6.pImmutableSamplers = nullptr;
-
-	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
-		lb_0, lb_1, lb_2, lb_3, lb_4, lb_5, lb_6
+	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
+		lb_0, lb_1, lb_2, lb_3, lb_4, lb_5,
 	};
 
 	VkDescriptorSetLayoutCreateInfo sli = {};
@@ -2468,72 +2439,6 @@ void BaseApplication::create_raytracing_pipeline()
 	vkDestroyShaderModule(m_device, sphere_int_module, nullptr);
 }
 
-void BaseApplication::create_texture_image()
-{
-	int tex_width, tex_height, tex_channels;
-	stbi_uc *pixels = stbi_load("resources/pythagoras.jpg", 
-			&tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
-	if (!pixels) {
-		throw std::runtime_error("failed to load texture");
-	}
-	VkDeviceSize image_size = tex_width * tex_height * 4;
-
-	VmaBufferAllocation staging;
-	create_buffer(image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		staging);
-
-	void *data;
-	auto res = vmaMapMemory(m_allocator, staging.alloc, &data);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to map buffer memory");
-	std::memcpy(data, pixels, size_t(image_size));
-	vmaUnmapMemory(m_allocator, staging.alloc);
-
-	stbi_image_free(pixels);
-
-	create_image(tex_width, tex_height, VK_FORMAT_R8G8B8A8_UNORM,
-				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_texture_img);
-
-	transition_image_layout(m_texture_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED,
-							VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-	copy_buffer_to_image(staging.buffer, m_texture_img.image, tex_width, tex_height);
-	transition_image_layout(m_texture_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-	vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
-}
-
-void BaseApplication::create_texture_image_view()
-{
-	m_texture_img_view = vk_helpers::create_image_view_2d(m_device, m_texture_img.image,
-			VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
-}
-
-void BaseApplication::create_texture_sampler()
-{
-	VkSamplerCreateInfo si = {};
-	si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	si.magFilter = VK_FILTER_LINEAR;
-	si.minFilter = VK_FILTER_LINEAR;
-	si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	si.anisotropyEnable = VK_TRUE;
-	si.maxAnisotropy = 16;
-	si.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-	si.unnormalizedCoordinates = VK_FALSE;
-	si.compareEnable = VK_FALSE;
-	si.compareOp = VK_COMPARE_OP_ALWAYS;
-	si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	si.mipLodBias = 0.0f;
-	si.minLod = 0.0f;
-	si.maxLod = 0.0f;
-
-	auto res = vkCreateSampler(m_device, &si, nullptr, &m_texture_sampler);
-	if (res != VK_SUCCESS) throw std::runtime_error("failed to create texture sampler");
-}
-
 void BaseApplication::create_rt_image()
 {
 	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R8G8B8A8_UNORM,
@@ -2571,18 +2476,16 @@ void BaseApplication::create_rt_image()
 void BaseApplication::create_descriptor_pool()
 {
 	uint32_t imgs_count = (uint32_t)m_swapchain_images.size();
-	std::array<VkDescriptorPoolSize, 5> ps = {};
+	std::array<VkDescriptorPoolSize, 4> ps = {};
 	ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	ps[0].descriptorCount = imgs_count;
-	ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	ps[1].descriptorCount = imgs_count;
 	// rt descriptors 
-	ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	ps[2].descriptorCount = imgs_count;
-	ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	ps[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	ps[1].descriptorCount = imgs_count;
+	ps[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	ps[2].descriptorCount = 2*imgs_count;
+	ps[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	ps[3].descriptorCount = 2*imgs_count;
-	ps[4].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	ps[4].descriptorCount = 2*imgs_count;
 	
 	VkDescriptorPoolCreateInfo pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2614,17 +2517,12 @@ void BaseApplication::create_descriptor_sets()
 		bi.offset = 0;
 		bi.range = sizeof(GlobalUniforms);
 
-		VkDescriptorImageInfo ii = {};
-		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		ii.imageView = m_texture_img_view;
-		ii.sampler = m_texture_sampler;
-
         VkWriteDescriptorSetAccelerationStructureKHR dw_rt = {};
 		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 		dw_rt.accelerationStructureCount = 1;
 		dw_rt.pAccelerationStructures = &m_top_as.structure;
 
-		std::array<VkWriteDescriptorSet, 3> dw = {};
+		std::array<VkWriteDescriptorSet, 2> dw = {};
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_desc_sets[i];
 		dw[0].dstBinding = 0;
@@ -2633,21 +2531,13 @@ void BaseApplication::create_descriptor_sets()
 		dw[0].descriptorCount = 1;
 		dw[0].pBufferInfo = &bi;
 
-		dw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        dw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[1].dstSet = m_desc_sets[i];
 		dw[1].dstBinding = 1;
 		dw[1].dstArrayElement = 0;
-		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		dw[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 		dw[1].descriptorCount = 1;
-		dw[1].pImageInfo = &ii;
-
-        dw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		dw[2].dstSet = m_desc_sets[i];
-		dw[2].dstBinding = 2;
-		dw[2].dstArrayElement = 0;
-		dw[2].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-		dw[2].descriptorCount = 1;
-		dw[2].pNext = &dw_rt;
+		dw[1].pNext = &dw_rt;
 		
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
@@ -2693,17 +2583,12 @@ void BaseApplication::create_rt_descriptor_sets()
 		ibi.offset = 0;
 		ibi.range = m_model_indices.size() * sizeof(uint32_t);
 
-		VkDescriptorImageInfo si = {};
-		si.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		si.imageView = m_texture_img_view;
-		si.sampler = m_texture_sampler;
-
 		VkDescriptorBufferInfo spheres_bi = {};
 		spheres_bi.buffer = m_sphere_buffer.buffer;
 		spheres_bi.offset = 0;
 		spheres_bi.range = m_sphere_primitives.size() * sizeof(SpherePrimitive);
 		
-		std::array<VkWriteDescriptorSet, 7> dw = {};
+		std::array<VkWriteDescriptorSet, 6> dw = {};
 
 		dw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[0].dstSet = m_rt_desc_sets[i];
@@ -2747,19 +2632,11 @@ void BaseApplication::create_rt_descriptor_sets()
 
 		dw[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		dw[5].dstSet = m_rt_desc_sets[i];
-		dw[5].dstBinding = 5;
+		dw[5].dstBinding = 6;
 		dw[5].dstArrayElement = 0;
-		dw[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		dw[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		dw[5].descriptorCount = 1;
-		dw[5].pImageInfo = &si;
-
-		dw[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		dw[6].dstSet = m_rt_desc_sets[i];
-		dw[6].dstBinding = 6;
-		dw[6].dstArrayElement = 0;
-		dw[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		dw[6].descriptorCount = 1;
-		dw[6].pBufferInfo = &spheres_bi;
+		dw[5].pBufferInfo = &spheres_bi;
 		   
 		vkUpdateDescriptorSets(m_device, uint32_t(dw.size()), dw.data(), 0, nullptr);
 	}
