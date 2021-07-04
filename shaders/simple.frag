@@ -15,16 +15,20 @@ layout(binding = 0) uniform CameraMatrices
 
 layout(set = 0, binding = 1) uniform accelerationStructureEXT scene;
 
-layout(location = 0) in vec3 frag_normal;
-layout(location = 1) in vec2 frag_tex_coord;
-layout(location = 2) in vec4 frag_world_pos;
+layout(location = 0) 
+in VertexOut
+{
+	vec3 wnormal;
+	vec2 tex_coord;
+	vec4 wpos;
+} fs_in;
 
 layout(location = 0) out vec4 out_color;
 
 void main()
 {
-	const vec3 hit_normal = frag_normal;
-	const vec3 hit_pos = frag_world_pos.xyz;
+	const vec3 hit_normal = normalize(fs_in.wnormal);
+	const vec3 hit_pos = fs_in.wpos.xyz;
 	const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
 	const vec3 to_light = normalize(ubo.light_pos.xyz-hit_pos.xyz);
 

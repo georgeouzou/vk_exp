@@ -62,7 +62,7 @@ void main()
 	vec3 norm = vertices[vidx0].normal.xyz * barys.x +
 				vertices[vidx1].normal.xyz * barys.y +
 				vertices[vidx2].normal.xyz * barys.z;
-	norm = normalize(norm);
+	norm = normalize(vec3(ubo.model * vec4(norm, 0.0)));
 	
 	vec3 hit_color = vec3(0.7, 0.7, 0.7);
 

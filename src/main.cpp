@@ -107,6 +107,13 @@ struct Vertex
 		return pos == other.pos && normal == other.normal && tex_coord == other.tex_coord;
 	}
 
+	template<int DIM>
+	static bool compare_position(const Vertex &v0, const Vertex &v1)
+	{
+		static_assert(DIM < 3);
+		return v0.pos[DIM] < v1.pos[DIM];
+	}
+
 	static VkVertexInputBindingDescription get_binding_description()
 	{
 		VkVertexInputBindingDescription bd = {};
@@ -329,8 +336,10 @@ private:
 	VkPipelineLayout m_rt_pipeline_layout {VK_NULL_HANDLE};
 	VkPipeline m_rt_pipeline{ VK_NULL_HANDLE };
 	
+	glm::mat4 m_model_tranformation;
 	std::vector<Vertex> m_model_vertices;
 	std::vector<uint32_t> m_model_indices;
+
 	std::vector<SpherePrimitive> m_sphere_primitives;
 
 	VmaBufferAllocation m_vertex_buffer;
@@ -1759,56 +1768,43 @@ void BaseApplication::load_model()
 		throw std::runtime_error(warn + err);
 	}
 
-	glm::vec3 centroid = glm::vec3(0.0f, 0.0f, 0.0f);
-	glm::vec3 max_coord(std::numeric_limits<float>::min());
-	glm::vec3 min_coord(std::numeric_limits<float>::max());;
-
-	size_t count_verts = attrib.vertices.size() / 3;
-	for (size_t i = 0; i < count_verts; ++i) {
-		float x = attrib.vertices[3 * i + 0];
-		float y = attrib.vertices[3 * i + 1];
-		float z = attrib.vertices[3 * i + 2];
-		centroid.x += x / count_verts;
-		centroid.y += y / count_verts;
-		centroid.z += z / count_verts;
-		if (x > max_coord.x) max_coord.x = x;
-		if (y > max_coord.y) max_coord.y = y;
-		if (z > max_coord.z) max_coord.z = z;
-		if (x < min_coord.x) min_coord.x = x;
-		if (y < min_coord.y) min_coord.y = y;
-		if (z < min_coord.z) min_coord.z = z;
-	}
-
-	glm::vec3 diff = max_coord - min_coord;
-	float scale = std::min(diff.x, std::min(diff.y, diff.z)) ;
+	//glm::vec3 centroid = glm::vec3(0.0f, 0.0f, 0.0f);
+	//glm::vec3 max_coord(std::numeric_limits<float>::min());
+	//glm::vec3 min_coord(std::numeric_limits<float>::max());;
+	//
+	//size_t count_verts = attrib.vertices.size() / 3;
+	//for (size_t i = 0; i < count_verts; ++i) {
+	//	float x = attrib.vertices[3 * i + 0];
+	//	float y = attrib.vertices[3 * i + 1];
+	//	float z = attrib.vertices[3 * i + 2];
+	//	centroid.x += x / count_verts;
+	//	centroid.y += y / count_verts;
+	//	centroid.z += z / count_verts;
+	//	if (x > max_coord.x) max_coord.x = x;
+	//	if (y > max_coord.y) max_coord.y = y;
+	//	if (z > max_coord.z) max_coord.z = z;
+	//	if (x < min_coord.x) min_coord.x = x;
+	//	if (y < min_coord.y) min_coord.y = y;
+	//	if (z < min_coord.z) min_coord.z = z;
+	//}
+	//glm::vec3 diff = max_coord - min_coord;
+	//float scale = std::min(diff.x, std::min(diff.y, diff.z)) ;
 
 	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
-#if 0
-	m_model_vertices.resize(4);
-	m_model_vertices[0].pos = glm::vec3(-1.0f, -1.0f, 0.0f);
-	m_model_vertices[1].pos = glm::vec3(+1.0f, -1.0f, 0.0f);
-	m_model_vertices[2].pos = glm::vec3(+1.0f, +1.0f, 0.0f);
-	m_model_vertices[3].pos = glm::vec3(-1.0f, +1.0f, 0.0f);
-	m_model_vertices[0].color = glm::vec3(1.0f, 0.0f, 0.0f);
-	m_model_vertices[1].color = glm::vec3(0.0f, 1.0f, 0.0f);
-	m_model_vertices[2].color = glm::vec3(0.0f, 0.0f, 1.0f);
-	m_model_vertices[3].color = glm::vec3(1.0f, 1.0f, 1.0f);
-	m_model_indices = { 0, 1, 2, 2, 3, 0 };
-#else 
-	for (const auto &shape : shapes) {
-		for (const auto &index : shape.mesh.indices) {
+
+	for (const auto& shape : shapes) {
+		for (const auto& index : shape.mesh.indices) {
 			Vertex vertex = {};
 			if (index.vertex_index < 0 || index.texcoord_index < 0 || index.normal_index < 0) continue;
 			vertex.pos = {
-				(attrib.vertices[3 * index.vertex_index + 0] - centroid.x)/ scale,
-				(attrib.vertices[3 * index.vertex_index + 1] - centroid.y)/ scale,
-				(attrib.vertices[3 * index.vertex_index + 2] - centroid.z)/ scale
+				attrib.vertices[3 * index.vertex_index + 0]+400,
+				attrib.vertices[3 * index.vertex_index + 1],
+				attrib.vertices[3 * index.vertex_index + 2]+200,
 			};
 			vertex.tex_coord = {
 				attrib.texcoords[2 * index.texcoord_index + 0],
 				1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
 			};
-
 			vertex.normal = {
 				attrib.normals[3 * index.normal_index + 0],
 				attrib.normals[3 * index.normal_index + 1],
@@ -1824,14 +1820,32 @@ void BaseApplication::load_model()
 #else 
 			m_model_indices.push_back(m_model_vertices.size());
 			m_model_vertices.push_back(vertex);
-		
 #endif
 		}
-		fprintf(stdout, "Loaded model: num vertices %" PRIu64 ", num indices %" PRIu64 "\n", 
-				m_model_vertices.size(),
-				m_model_indices.size());
+		fprintf(stdout, "Loaded model part: num vertices %" PRIu64 ", num indices %" PRIu64 "\n",
+			m_model_vertices.size(),
+			m_model_indices.size());
 	}
-#endif
+	
+	
+	auto [vxmin, vxmax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<0>);
+	auto [vymin, vymax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<1>);
+	auto [vzmin, vzmax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<2>);
+	glm::vec3 min_coord(vxmin->pos.x, vymin->pos.y, vzmin->pos.z);
+	glm::vec3 max_coord(vxmax->pos.x, vymax->pos.y, vzmax->pos.z);
+	glm::vec3 diff_coord = max_coord - min_coord;
+	float scale = std::min({ diff_coord.x, diff_coord.y, diff_coord.z });
+	glm::mat4 model_scale = glm::scale(glm::mat4(1.0), glm::vec3(1.0f / scale));
+
+	// translate model to its centroid
+	glm::vec3 centroid = (min_coord + max_coord) * 0.5f;
+	glm::mat4 model_translate = glm::translate(glm::mat4(1.0), -centroid);
+
+	// x axis is the car's major axis, y is up
+	glm::mat4 model_rotate = glm::rotate(glm::mat4(1.0f), glm::half_pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));
+	model_rotate = glm::rotate(model_rotate, glm::half_pi<float>(), glm::vec3(1.0, 0.0, 0.0));
+
+	m_model_tranformation = model_scale * model_rotate * model_translate;
 }
 
 void BaseApplication::create_spheres()
@@ -2186,9 +2200,11 @@ void BaseApplication::create_top_acceleration_structure()
 		VkAccelerationStructureInstanceKHR* instance_ptr;
 		auto res = vmaMapMemory(m_allocator, staging.alloc, (void**)&instance_ptr);
 		if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
-		glm::mat4 transform = glm::mat4(1.0f);
-		transform = glm::transpose(transform);
+		
 		{
+			// model
+			glm::mat4 transform = m_model_tranformation;
+			transform = glm::transpose(transform);
 			memcpy(&instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
 			instance_ptr->instanceCustomIndex = 0;
 			instance_ptr->mask = 0xFF;
@@ -2198,6 +2214,9 @@ void BaseApplication::create_top_acceleration_structure()
 		}
 		instance_ptr++;
 		{
+			// spheres
+			glm::mat4 transform = glm::mat4(1.0f);
+			transform = glm::transpose(transform);
 			memcpy(&instance_ptr->transform, &transform[0][0], sizeof(float) * 12);
 			instance_ptr->instanceCustomIndex = 1;
 			instance_ptr->mask = 0xFF;
@@ -2931,13 +2950,12 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
 
 	GlobalUniforms ubo = {};
-	//ubo.model = glm::rotate(glm::mat4(1.0f), , glm::vec3(0.0f, 0.0f, 1.0f));
-	ubo.model = glm::mat4(1.0);
+	ubo.model = m_model_tranformation;
 	//ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.view = m_camera.get_view_matrix();
 	ubo.proj = glm::perspective(glm::radians(45.0f), m_swapchain_extent.width / (float)m_swapchain_extent.height, 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1;
-	ubo.iview = glm::inverse(ubo.view * ubo.model);
+	ubo.iview = glm::inverse(ubo.view);
 	ubo.iproj = glm::inverse(ubo.proj);
 
 	ubo.light_pos = glm::vec4(3.0f * std::cos(time), 3 * std::sin(time), 2.0f, 1.0f);
