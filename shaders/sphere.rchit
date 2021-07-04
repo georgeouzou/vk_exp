@@ -66,7 +66,7 @@ void main()
 	
 	if (metallic) {
 		if (payload.depth < 3) {
-			traceRayEXT(scene, ray_flags, 0xFF, 0, 1, 0, refl_orig, 0.001, refl_dir, 1000.0, 0);
+			traceRayEXT(scene, ray_flags, 0xFF, 0, 2, 0, refl_orig, 0.001, refl_dir, 1000.0, 0);
 			vec3 in_color = payload.color_dist.rgb;
 			float in_dist = payload.color_dist.w;
 			payload.color_dist.rgb = color * in_color;
@@ -78,7 +78,7 @@ void main()
 
 	const vec3 to_light1 = normalize(ubo.light_pos.xyz - refl_orig);
 	const uint shadow_ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
-	traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 1, 1, refl_orig, 0.001, to_light1, 1000.0, 1);
+	traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 2, 1, refl_orig, 0.001, to_light1, 1000.0, 1);
 	const float ambient = 0.1;
 	const float lighting1 = (shadow_payload.dist > 0.0) ? ambient : max(ambient, dot(norm, to_light1));
 	payload.color_dist.rgb = lighting1 * color;

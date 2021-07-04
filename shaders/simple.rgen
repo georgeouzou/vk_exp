@@ -38,7 +38,7 @@ void main()
 
 	payload.depth = 0;
 
-	traceRayEXT(scene, ray_flags, 0xFF, 0, 1, 0, origin, 0.001, dir, 1000.0, 0);
+	traceRayEXT(scene, ray_flags, 0xFF, 0, 2, 0, origin, 0.001, dir, 1000.0, 0);
 	
 	const vec3 color = payload.color_dist.xyz;
 	const float hdist = payload.color_dist.w;

@@ -2873,9 +2873,18 @@ void BaseApplication::create_rt_command_buffers()
 			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
 
 #endif
-		VkStridedDeviceAddressRegionKHR raygen_region = { m_rt_sbt_address+0, 64, 64 };
-		VkStridedDeviceAddressRegionKHR hitgroup_region = { m_rt_sbt_address+(1*64), 64, (4*64) };
-		VkStridedDeviceAddressRegionKHR miss_region = { m_rt_sbt_address + (1*64) + (4*64), 64, 2*64 };
+		const size_t raygen_stride = 64;
+		const size_t hitgroup_stride = 64;
+		const size_t miss_stride = 64;
+		size_t num_raygen = 1;
+		size_t num_hitgroups = 4;
+		size_t num_miss = 2;
+		size_t raygen_offset = 0;
+		size_t hitgroups_offset = raygen_stride * num_raygen;
+		size_t miss_offset = hitgroups_offset + hitgroup_stride * num_hitgroups;
+		VkStridedDeviceAddressRegionKHR raygen_region = { m_rt_sbt_address+raygen_offset, raygen_stride, raygen_stride*num_raygen };
+		VkStridedDeviceAddressRegionKHR hitgroup_region = { m_rt_sbt_address+hitgroups_offset, hitgroup_stride, hitgroup_stride*num_hitgroups };
+		VkStridedDeviceAddressRegionKHR miss_region = { m_rt_sbt_address+miss_offset, miss_stride, miss_stride*num_miss };
 		VkStridedDeviceAddressRegionKHR callable_region = { 0, 0, 0 };
 		vkCmdTraceRaysKHR(m_rt_cmd_buffers[i],
 			&raygen_region, &miss_region, &hitgroup_region, &callable_region,
