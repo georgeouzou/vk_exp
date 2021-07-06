@@ -11,7 +11,7 @@ struct HitPayload
 
 struct ShadowPayload
 {
-	float dist;
+	float in_shadow;
 };
 
 struct SpherePrimitive
@@ -62,34 +62,33 @@ void main()
 	const float radius = (aabb_max.x - aabb_min.x) / 2.0;
 	const bool metallic = sph.material == 1;
 
-	vec3 norm = (sphere_point - center) / radius;
+	vec3 norm = normalize(sphere_point - center);
 	vec3 refl_dir = reflect(normalize(gl_WorldRayDirectionEXT), norm);
 	const vec3 hit_pos = sphere_point;
+	
 	const vec3 refl_orig = hit_pos + norm * 0.001;
 
 	const uint ray_flags = gl_RayFlagsOpaqueEXT;
 
 	vec3 color = sph.albedo.rgb;
 	
-	if (metallic) {
-		if (payload.depth < 3) {
-			traceRayEXT(scene, ray_flags, 0xFF, 0, 2, 0, refl_orig, 0.001, refl_dir, 1000.0, 0);
-			vec3 in_color = payload.color_dist.rgb;
-			float in_dist = payload.color_dist.w;
-			payload.color_dist.rgb = color * in_color;
-			color = in_color;
-		} else {
-			payload.color_dist.rgb = color;
-		}
-	}
+	//if (metallic && payload.depth < 2) {
+	//	traceRayEXT(scene, ray_flags, 0xFF, 0, 2, 0, refl_orig, 0.001, refl_dir, 1000.0, 0);
+	//	vec3 in_color = payload.color_dist.rgb;	
+	//	color = color * in_color;
+	//}
 
 	const vec3 to_light1 = normalize(ubo.light_pos.xyz - refl_orig);
-	const uint shadow_ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
-	traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 2, 1, refl_orig, 0.001, to_light1, 1000.0, 1);
-	const float ambient = 0.1;
-	const float lighting1 = (shadow_payload.dist > 0.0) ? ambient : max(ambient, dot(norm, to_light1));
-	payload.color_dist.rgb = lighting1 * color;
 	
-	payload.color_dist.w = gl_HitTEXT;
+	const uint shadow_ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT; // | gl_RayFlagsSkipClosestHitShaderEXT;
+	
+	//shadow_payload.in_shadow = 1.0;
+	traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 2, 1, refl_orig, 0.01, to_light1, 1000.0, 1);
+
+	const float ambient = 0.1;
+	const float lighting1 = shadow_payload.in_shadow > 0.0 ? ambient : max(ambient, dot(norm, to_light1));
+	
+	vec3 out_color = lighting1 * color;
+	payload.color_dist = vec4(out_color, gl_HitTEXT);
 	payload.depth += 1;
 }

@@ -3,12 +3,12 @@
 
 struct ShadowPayload
 {
-	float dist;
+	float in_shadow;
 };
 
 layout(location = 1) rayPayloadInEXT ShadowPayload shadow_payload;
 
 void main()
 {
-	shadow_payload.dist = gl_HitTEXT;
+	shadow_payload.in_shadow = gl_HitTEXT;
 }

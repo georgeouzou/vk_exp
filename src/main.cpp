@@ -378,7 +378,7 @@ private:
 	glm::mat4 m_model_tranformation;
 	std::vector<Vertex> m_model_vertices;
 	std::vector<uint32_t> m_model_indices;
-
+	
 	std::vector<SpherePrimitive> m_sphere_primitives;
 
 	VmaBufferAllocation m_vertex_buffer;
@@ -1542,7 +1542,8 @@ void BaseApplication::create_graphics_pipeline()
 VkShaderModule BaseApplication::create_shader_module(const std::string &file_name, shaderc_shader_kind shader_kind, const std::vector<char>& code) const
 {
 	shaderc_compile_options_t opts = shaderc_compile_options_initialize();
-	shaderc_compile_options_set_optimization_level(opts, shaderc_optimization_level_size);
+	shaderc_compile_options_set_generate_debug_info(opts);
+	shaderc_compile_options_set_optimization_level(opts, shaderc_optimization_level_zero);
 	shaderc_compile_options_set_target_env(opts, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
     shaderc_compile_options_set_target_spirv(opts, shaderc_spirv_version_1_5);
 
@@ -1803,31 +1804,9 @@ void BaseApplication::load_model()
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
 	std::string warn, err;
-	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/bmw.obj")) {
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/bmw.obj", "resources")) {
 		throw std::runtime_error(warn + err);
 	}
-
-	//glm::vec3 centroid = glm::vec3(0.0f, 0.0f, 0.0f);
-	//glm::vec3 max_coord(std::numeric_limits<float>::min());
-	//glm::vec3 min_coord(std::numeric_limits<float>::max());;
-	//
-	//size_t count_verts = attrib.vertices.size() / 3;
-	//for (size_t i = 0; i < count_verts; ++i) {
-	//	float x = attrib.vertices[3 * i + 0];
-	//	float y = attrib.vertices[3 * i + 1];
-	//	float z = attrib.vertices[3 * i + 2];
-	//	centroid.x += x / count_verts;
-	//	centroid.y += y / count_verts;
-	//	centroid.z += z / count_verts;
-	//	if (x > max_coord.x) max_coord.x = x;
-	//	if (y > max_coord.y) max_coord.y = y;
-	//	if (z > max_coord.z) max_coord.z = z;
-	//	if (x < min_coord.x) min_coord.x = x;
-	//	if (y < min_coord.y) min_coord.y = y;
-	//	if (z < min_coord.z) min_coord.z = z;
-	//}
-	//glm::vec3 diff = max_coord - min_coord;
-	//float scale = std::min(diff.x, std::min(diff.y, diff.z)) ;
 
 	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
 
@@ -1884,7 +1863,12 @@ void BaseApplication::load_model()
 	glm::mat4 model_rotate = glm::rotate(glm::mat4(1.0f), glm::half_pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));
 	model_rotate = glm::rotate(model_rotate, glm::half_pi<float>(), glm::vec3(1.0, 0.0, 0.0));
 
-	m_model_tranformation = model_scale * model_rotate * model_translate;
+	// y is up in car coordinates
+	float half_height = diff_coord.y * 0.5f;
+	half_height /= scale;
+	glm::mat4 translate_to_ground = glm::translate(glm::mat4(1.0), glm::vec3(0.0f, 0.0f, half_height));
+
+	m_model_tranformation = translate_to_ground * model_scale * model_rotate * model_translate;
 }
 
 void BaseApplication::create_spheres()
@@ -1899,8 +1883,8 @@ void BaseApplication::create_spheres()
 	for (int a = -10; a < 10; ++a) {
 		for (int b = -10; b < 10; ++b) {
 			SpherePrimitive sphere = {};
-			glm::vec3 center = glm::vec3(scale*a + scale *rgen(), scale*b + scale*rgen(), -0.6f);
 			float radius = 0.1f * rgen();
+			glm::vec3 center = glm::vec3(scale*a + scale *rgen(), scale*b + scale*rgen(), +radius);
 			// compute aabb
 			glm::vec3 aabb_min = center - glm::vec3(radius);
 			glm::vec3 aabb_max = center + glm::vec3(radius);
@@ -1915,6 +1899,24 @@ void BaseApplication::create_spheres()
 			m_sphere_primitives.push_back(sphere);
 		}
 	}
+	// add a really big one
+	{
+		SpherePrimitive earth = {};
+		glm::vec3 center = glm::vec3(0.0, 0.0, -30000);
+		float radius = 30000;
+		glm::vec3 aabb_min = center - glm::vec3(radius);
+		glm::vec3 aabb_max = center + glm::vec3(radius);
+		earth.bbox.minX = aabb_min.x;
+		earth.bbox.minY = aabb_min.y;
+		earth.bbox.minZ = aabb_min.z;
+		earth.bbox.maxX = aabb_max.x;
+		earth.bbox.maxY = aabb_max.y;
+		earth.bbox.maxZ = aabb_max.z;
+		earth.albedo = glm::vec4(0.2f, 0.4f, 0.6f, 1.0f);
+		earth.material = MATERIAL_LAMBERTIAN;
+		m_sphere_primitives.push_back(earth);
+	}
+	
 #else
 	SpherePrimitive sphere;
 	sphere.aabb_min = { -1.0f, -1.0f, -1.0f };
@@ -2227,7 +2229,7 @@ void BaseApplication::create_top_acceleration_structure()
 
 	// create instances buffer
 	{
-		VkDeviceSize instances_size = 2 * sizeof(VkAccelerationStructureInstanceKHR);
+		VkDeviceSize instances_size = max_primitive_counts[0] * sizeof(VkAccelerationStructureInstanceKHR);
 		VmaBufferAllocation staging;
 		create_buffer(instances_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -2260,6 +2262,7 @@ void BaseApplication::create_top_acceleration_structure()
 			instance_ptr->instanceShaderBindingTableRecordOffset = 2; // here we set 2 because we have shade/shadow shaders for the first instance
 			instance_ptr->accelerationStructureReference = vk_helpers::get_acceleration_structure_address(m_device, m_bottom_as_spheres.structure);;
 		}
+
 		vmaUnmapMemory(m_allocator, staging.alloc);
 
 		create_buffer(instances_size,
@@ -2397,8 +2400,7 @@ void BaseApplication::create_raytracing_pipeline()
 	sphere_chci.pName = "main";
 
 	std::array<VkPipelineShaderStageCreateInfo, 7> stages = { rgci, chci, mci, shadow_chci, shadow_mci, sphere_ici, sphere_chci };
-
-	std::array<VkRayTracingShaderGroupCreateInfoKHR, 6> groups = {};
+	std::array<VkRayTracingShaderGroupCreateInfoKHR, 7> groups = {};
 
 	// raygen group
 	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
@@ -2428,20 +2430,27 @@ void BaseApplication::create_raytracing_pipeline()
 	groups[3].closestHitShader = 6;
 	groups[3].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[3].intersectionShader = 5;
-	// miss group
+	// sphere shadow hitgroup
 	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	groups[4].generalShader = 2;
-	groups[4].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;
+	groups[4].generalShader = VK_SHADER_UNUSED_KHR;
+	groups[4].closestHitShader = 3;
 	groups[4].anyHitShader = VK_SHADER_UNUSED_KHR;
-	groups[4].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// shadow miss group
+	groups[4].intersectionShader = 5;
+	// miss group
 	groups[5].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	groups[5].generalShader = 4;
+	groups[5].generalShader = 2;
 	groups[5].closestHitShader = VK_SHADER_UNUSED_KHR;
 	groups[5].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[5].intersectionShader = VK_SHADER_UNUSED_KHR;
+	// shadow miss group
+	groups[6].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[6].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+	groups[6].generalShader = 4;
+	groups[6].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[6].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[6].intersectionShader = VK_SHADER_UNUSED_KHR;
 
 	VkPipelineLibraryCreateInfoKHR libci = {};
 	libci.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR;
@@ -2669,7 +2678,7 @@ void BaseApplication::create_shader_binding_table()
 		throw std::runtime_error("we assume at compile time that shadergroup base alignment is 64 bytes");
 	}
 
-	const uint32_t group_count = 6u;
+	const uint32_t group_count = 7u;
 	ShaderGroupHandle handles[group_count];
 	vkGetRayTracingShaderGroupHandlesKHR(m_device, m_rt_pipeline, 0, group_count, sizeof(ShaderGroupHandle) * group_count, handles);
 
@@ -2692,7 +2701,7 @@ void BaseApplication::create_shader_binding_table()
 		spheres_rec.shader = handles[3];
 		spheres_rec.spheres_ref = vk_helpers::get_buffer_address(m_device, m_sphere_buffer.buffer);
 
-		ShaderGroupHandle spheres_occlusion_rec = handles[2];
+		ShaderGroupHandle spheres_occlusion_rec = handles[4];
 
 		// hit groups
 		// triangles 
@@ -2701,17 +2710,18 @@ void BaseApplication::create_shader_binding_table()
 		// triangles shadow
 		std::memcpy(data, &mesh_occlusion_rec, sizeof(mesh_occlusion_rec));
 		data += get_sbt_hit_record_size();
+		
 		// spheres
 		std::memcpy(data, &spheres_rec, sizeof(spheres_rec));
 		data += get_sbt_hit_record_size();
-		// spheres shadow (same as triangles)
+		// spheres shadow
 		std::memcpy(data, &spheres_occlusion_rec, sizeof(spheres_occlusion_rec));
 		data += get_sbt_hit_record_size();
 	}
 	// write miss groups
 	{
-		ShaderGroupHandle miss_rec = handles[4];
-		ShaderGroupHandle miss_occlusion_rec = handles[5];
+		ShaderGroupHandle miss_rec = handles[5];
+		ShaderGroupHandle miss_occlusion_rec = handles[6];
 		// miss groups 
 		std::memcpy(data, &miss_rec, sizeof(miss_rec));
 		data += get_sbt_miss_record_size();
@@ -2782,7 +2792,6 @@ void BaseApplication::create_command_pools()
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to create command pool");
 	}
-
 }
 
 void BaseApplication::create_command_buffers()
@@ -2874,13 +2883,7 @@ void BaseApplication::create_rt_command_buffers()
 		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline);
 		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline_layout,
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
-#if 0
-		vkCmdTraceRaysKHR(m_rt_cmd_buffers[i],
-			/*raygen sbt*/ m_rt_sbt, 0,
-			/*miss sbt*/   m_rt_sbt, 320, 64,
-			/*hit  sbt*/   m_rt_sbt, 64, 64, VK_NULL_HANDLE, 0, 0, m_width, m_height, 1);
 
-#endif
 		const size_t raygen_stride = get_sbt_raygen_record_size();
 		const size_t hitgroup_stride = get_sbt_hit_record_size();
 		const size_t miss_stride = get_sbt_miss_record_size();
@@ -2890,9 +2893,21 @@ void BaseApplication::create_rt_command_buffers()
 		size_t raygen_offset = 0;
 		size_t hitgroups_offset = raygen_stride * num_raygen;
 		size_t miss_offset = hitgroups_offset + hitgroup_stride * num_hitgroups;
-		VkStridedDeviceAddressRegionKHR raygen_region = { m_rt_sbt_address+raygen_offset, raygen_stride, raygen_stride*num_raygen };
-		VkStridedDeviceAddressRegionKHR hitgroup_region = { m_rt_sbt_address+hitgroups_offset, hitgroup_stride, hitgroup_stride*num_hitgroups };
-		VkStridedDeviceAddressRegionKHR miss_region = { m_rt_sbt_address+miss_offset, miss_stride, miss_stride*num_miss };
+		VkStridedDeviceAddressRegionKHR raygen_region = { 
+			m_rt_sbt_address+raygen_offset, 
+			raygen_stride, 
+			raygen_stride*num_raygen 
+		};
+		VkStridedDeviceAddressRegionKHR hitgroup_region = { 
+			m_rt_sbt_address+hitgroups_offset, 
+			hitgroup_stride, 
+			hitgroup_stride*num_hitgroups 
+		};
+		VkStridedDeviceAddressRegionKHR miss_region = { 
+			m_rt_sbt_address+miss_offset, 
+			miss_stride, 
+			miss_stride*num_miss 
+		};
 		VkStridedDeviceAddressRegionKHR callable_region = { 0, 0, 0 };
 		vkCmdTraceRaysKHR(m_rt_cmd_buffers[i],
 			&raygen_region, &miss_region, &hitgroup_region, &callable_region,
@@ -2975,7 +2990,7 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.iview = glm::inverse(ubo.view);
 	ubo.iproj = glm::inverse(ubo.proj);
 
-	ubo.light_pos = glm::vec4(3.0f * std::cos(time), 3 * std::sin(time), 2.0f, 1.0f);
+	ubo.light_pos = glm::vec4(4.0f * std::cos(time), 4.0f * std::sin(time), 5.0f, 1.0f);
 
 	void *data;
 	auto res = vmaMapMemory(m_allocator, m_uni_buffers[idx].alloc, &data);

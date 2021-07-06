@@ -3,12 +3,12 @@
 
 struct ShadowPayload
 {
-	float dist;
+	float in_shadow;
 };
 
 layout(location = 1) rayPayloadInEXT ShadowPayload shadow_payload;
 
 void main()
 {
-	shadow_payload.dist = -1.0;
+	shadow_payload.in_shadow = -1.0;
 }

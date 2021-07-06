@@ -11,7 +11,7 @@ struct HitPayload
 
 struct ShadowPayload
 {
-	float dist;
+	float in_shadow;
 };
 
 struct TriVertex
@@ -51,9 +51,8 @@ layout(shaderRecordEXT, std430) buffer ShaderRecord
 } shader_record;
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
-					 hitAttributeEXT vec2 bary;
-
 layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
+hitAttributeEXT vec2 bary;
 
 void main()
 {
@@ -81,13 +80,15 @@ void main()
 	const vec3 hit_normal = norm;
 	const vec3 hit_pos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
 	const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
-	const vec3 to_light1 = normalize(ubo.light_pos.xyz);
+	const vec3 to_light1 = normalize(ubo.light_pos.xyz - shadow_ray_orig);
 
-	const uint shadow_ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
-	traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 2, 1, shadow_ray_orig, 0.001, to_light1, 1000.0, 1);
+	const uint shadow_ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT; // | gl_RayFlagsSkipClosestHitShaderEXT;
+	//shadow_payload.in_shadow = 1.0;
+	traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 2, 1, shadow_ray_orig, 0.01, to_light1, 1000.0, 1);
 
 	const float ambient = 0.1;
-	const float lighting1 = (shadow_payload.dist > 0.0) ? ambient : max(ambient, dot(hit_normal, to_light1));
+	const float lighting1 = shadow_payload.in_shadow > 0.0 ? ambient : max(ambient, dot(hit_normal, to_light1));
+	
 	vec3 out_color = lighting1 * hit_color;
 	payload.color_dist = vec4(out_color, gl_HitTEXT);
 	payload.depth += 1;
