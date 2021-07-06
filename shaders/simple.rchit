@@ -26,7 +26,7 @@ layout(buffer_reference, scalar, buffer_reference_align = 8) buffer VertexBuffer
 	TriVertex vertices[];
 };
 
-layout(buffer_reference, scalar, buffer_reference_align = 8) buffer IndexBuffer
+layout(buffer_reference, scalar, buffer_reference_align = 4) buffer IndexBuffer
 {
 	uvec3 indices[];
 };
@@ -48,6 +48,7 @@ layout(shaderRecordEXT, std430) buffer ShaderRecord
 {
 	VertexBuffer vertex_buffer;
 	IndexBuffer index_buffer;
+    vec4 part_color;
 } shader_record;
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
@@ -75,7 +76,7 @@ void main()
 				v2.normal.xyz * barys.z;
 	norm = normalize(vec3(ubo.model * vec4(norm, 0.0)));
 	
-	vec3 hit_color = vec3(0.7, 0.7, 0.7);
+	vec3 hit_color = shader_record.part_color.rgb;
 
 	const vec3 hit_normal = norm;
 	const vec3 hit_pos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;

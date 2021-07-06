@@ -13,3 +13,6 @@ compile_commands.json
 
 #ignore config file
 src/shader_dir.h
+
+#vim swp files
+*.swp

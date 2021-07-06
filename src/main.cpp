@@ -14,6 +14,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <random>
+#include <cassert>
 
 #include <volk.h>
 #include <shaderc/shaderc.h>
@@ -187,11 +188,21 @@ struct GlobalUniforms
 	glm::vec4 light_pos;
 };
 
+struct ModelPart
+{
+    uint32_t vertex_offset;
+    uint32_t vertex_count;
+    uint32_t index_offset;
+    uint32_t index_count;
+    glm::vec4 color;
+};
+
 struct SBTRecordHitMesh
 {
 	ShaderGroupHandle shader;
 	VkDeviceAddress vertices_ref;
 	VkDeviceAddress indices_ref;
+    glm::vec4 color;
 };
 
 struct SBTRecordHitSphere
@@ -224,6 +235,7 @@ constexpr size_t get_sbt_raygen_record_size()
 static_assert(get_sbt_hit_record_size() == get_sbt_raygen_record_size());
 static_assert(get_sbt_hit_record_size() == get_sbt_miss_record_size());
 static_assert(get_sbt_hit_record_size() == 64);
+
 
 class BaseApplication
 {
@@ -378,6 +390,7 @@ private:
 	glm::mat4 m_model_tranformation;
 	std::vector<Vertex> m_model_vertices;
 	std::vector<uint32_t> m_model_indices;
+    std::vector<ModelPart> m_model_parts;
 	
 	std::vector<SpherePrimitive> m_sphere_primitives;
 
@@ -1801,17 +1814,18 @@ void BaseApplication::copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_
 void BaseApplication::load_model()
 {
 	tinyobj::attrib_t attrib;
-	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::shape_t> parts;
 	std::vector<tinyobj::material_t> materials;
 	std::string warn, err;
-	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "resources/bmw.obj", "resources")) {
+	if (!tinyobj::LoadObj(&attrib, &parts, &materials, &warn, &err, "resources/bmw.obj", "resources")) {
 		throw std::runtime_error(warn + err);
 	}
-
-	std::unordered_map<Vertex, uint32_t> unique_vtx = {};
-
-	for (const auto& shape : shapes) {
-		for (const auto& index : shape.mesh.indices) {
+    
+	for (const auto& part : parts) {
+        std::unordered_map<Vertex, uint32_t> unique_vtx = {};
+        std::vector<Vertex> part_vertices;
+        std::vector<uint32_t> part_indices;
+		for (const auto& index : part.mesh.indices) {
 			Vertex vertex = {};
 			if (index.vertex_index < 0 || index.texcoord_index < 0 || index.normal_index < 0) continue;
 			vertex.pos = {
@@ -1828,24 +1842,37 @@ void BaseApplication::load_model()
 				attrib.normals[3 * index.normal_index + 1],
 				attrib.normals[3 * index.normal_index + 2]
 			};
-#if 1
 			if (unique_vtx.count(vertex) == 0) {
-				unique_vtx[vertex] = uint32_t(m_model_vertices.size());
-				m_model_vertices.push_back(vertex);
+				unique_vtx[vertex] = uint32_t(part_vertices.size());
+				part_vertices.push_back(vertex);
 			}
-
-			m_model_indices.push_back(unique_vtx[vertex]);
-#else 
-			m_model_indices.push_back(m_model_vertices.size());
-			m_model_vertices.push_back(vertex);
-#endif
+			part_indices.push_back(unique_vtx[vertex]);
 		}
-		fprintf(stdout, "Loaded model part: num vertices %" PRIu64 ", num indices %" PRIu64 "\n",
-			m_model_vertices.size(),
-			m_model_indices.size());
+        // append part data to model data
+        if (part_indices.size() == 0) {
+            assert(part_vertices.size() == 0);
+            continue;
+        }
+
+        uint32_t vertex_offset = m_model_vertices.size();
+        uint32_t index_offset = m_model_indices.size();
+        m_model_vertices.insert(m_model_vertices.end(), part_vertices.begin(), part_vertices.end());
+        m_model_indices.insert(m_model_indices.end(), part_indices.begin(), part_indices.end());
+        
+        ModelPart part_info = {}; 
+        part_info.vertex_offset = vertex_offset;
+        part_info.vertex_count = part_vertices.size();
+        part_info.index_offset = index_offset;
+        part_info.index_count = part_indices.size();
+        const float *mat = materials[part.mesh.material_ids[0]].diffuse;
+        part_info.color = glm::vec4(mat[0], mat[1], mat[2], 1.0);
+        m_model_parts.push_back(part_info);
+        printf("Add part {v0 %u, vc %u, i0 %u, ic %u}\n", part_info.vertex_offset, part_info.vertex_count, part_info.index_offset, part_info.index_count);
 	}
-	
-	
+    fprintf(stdout, "Loaded model part: num vertices %" PRIu64 ", num indices %" PRIu64 "\n",
+        m_model_vertices.size(),
+        m_model_indices.size());
+
 	auto [vxmin, vxmax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<0>);
 	auto [vymin, vymax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<1>);
 	auto [vzmin, vzmax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<2>);
@@ -2017,42 +2044,47 @@ void BaseApplication::create_sphere_buffer()
 
 void BaseApplication::create_bottom_acceleration_structure()
 {
-	VkAccelerationStructureGeometryKHR geom = {};
-	geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-	geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
-	geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    std::vector<VkAccelerationStructureGeometryKHR> geometries;
+    std::vector<uint32_t> max_primitive_counts;
+    for (const ModelPart &part : m_model_parts) {
+        VkAccelerationStructureGeometryKHR geom = {};
+        geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
 
-	VkAccelerationStructureGeometryTrianglesDataKHR &geom_trias = geom.geometry.triangles;
-	geom_trias.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-	geom_trias.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-	geom_trias.vertexStride = sizeof(Vertex);
-	geom_trias.indexType = VK_INDEX_TYPE_UINT32;
-	geom_trias.maxVertex = uint32_t(m_model_vertices.size()) - 1;
-	// for now 
-	geom_trias.vertexData.deviceAddress = 0;
-	geom_trias.indexData.deviceAddress = 0;
-	geom_trias.transformData.deviceAddress = 0;
+        VkAccelerationStructureGeometryTrianglesDataKHR &geom_trias = geom.geometry.triangles;
+        geom_trias.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        geom_trias.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        geom_trias.vertexStride = sizeof(Vertex);
+        geom_trias.indexType = VK_INDEX_TYPE_UINT32;
+        geom_trias.maxVertex = part.vertex_count - 1;
+        // for now 
+        geom_trias.vertexData.deviceAddress = 0;
+        geom_trias.indexData.deviceAddress = 0;
+        geom_trias.transformData.deviceAddress = 0;
+
+        geometries.push_back(geom);
+        max_primitive_counts.push_back(part.index_count/3);
+    }
 
 	VkAccelerationStructureBuildGeometryInfoKHR build_info = {};
 	build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
 	build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 	build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
 	build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-	build_info.geometryCount = 1;
-	build_info.pGeometries = &geom;
+	build_info.geometryCount = uint32_t(geometries.size());
+	build_info.pGeometries = geometries.data();
 	// for now
 	build_info.srcAccelerationStructure = VK_NULL_HANDLE;
 	build_info.dstAccelerationStructure = VK_NULL_HANDLE;
 	build_info.scratchData.deviceAddress = 0;
-
-	const uint32_t max_primitive_counts[1] = { uint32_t(m_model_indices.size()) / 3 };
 
 	// get the needed sizes for the buffers
 	VkAccelerationStructureBuildSizesInfoKHR sizes = {};
 	sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 	vkGetAccelerationStructureBuildSizesKHR(m_device,
 		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-		&build_info, max_primitive_counts, &sizes);
+		&build_info, max_primitive_counts.data(), &sizes);
 
 	fprintf(stdout, "BOTTOM AS: needed scratch memory %" PRIu64 " MB\n", sizes.buildScratchSize / 1024 / 1024);
 	fprintf(stdout, "BOTTOM AS: needed structure memory %" PRIu64 " MB\n", sizes.accelerationStructureSize / 1024 / 1024);
@@ -2077,21 +2109,27 @@ void BaseApplication::create_bottom_acceleration_structure()
 	
 	// build as
 	// fill all the addresses needed
-	geom_trias.vertexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_vertex_buffer.buffer);
-	geom_trias.indexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_index_buffer.buffer);
-	geom_trias.transformData.deviceAddress = 0;
+    for (auto &geom : geometries) {
+        VkAccelerationStructureGeometryTrianglesDataKHR &geom_trias = geom.geometry.triangles;
+        geom_trias.vertexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_vertex_buffer.buffer);
+        geom_trias.indexData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_index_buffer.buffer);
+        geom_trias.transformData.deviceAddress = 0;
+    }
 	build_info.srcAccelerationStructure = VK_NULL_HANDLE;
 	build_info.dstAccelerationStructure = m_bottom_as.structure;
 	build_info.scratchData.deviceAddress = vk_helpers::get_buffer_address(m_device, m_bottom_as.scratch_buffer.buffer);
 
-	VkAccelerationStructureBuildRangeInfoKHR geom_range = {};
-	geom_range.firstVertex = 0;
-	geom_range.primitiveCount = max_primitive_counts[0];
-	geom_range.primitiveOffset = 0;
-	geom_range.transformOffset = 0;
-	
-	VkAccelerationStructureBuildRangeInfoKHR build_ranges[] = { geom_range };
-	const VkAccelerationStructureBuildRangeInfoKHR* p_build_ranges[] = { build_ranges };
+    // fill all geometry build ranges
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR> geom_ranges;
+    for (const ModelPart &part : m_model_parts) {
+        VkAccelerationStructureBuildRangeInfoKHR range = {};
+        range.firstVertex = part.vertex_offset;
+        range.primitiveCount = part.index_count/3;
+        range.primitiveOffset = part.index_offset*sizeof(uint32_t);
+        range.transformOffset = 0;
+        geom_ranges.push_back(range);
+    }
+	const VkAccelerationStructureBuildRangeInfoKHR* p_build_ranges[] = { geom_ranges.data() };
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
 	vkCmdBuildAccelerationStructuresKHR(cmd_buf, 1, &build_info, p_build_ranges);
@@ -2259,7 +2297,7 @@ void BaseApplication::create_top_acceleration_structure()
 			instance_ptr->instanceCustomIndex = 1;
 			instance_ptr->mask = 0xFF;
 			instance_ptr->flags = 0;
-			instance_ptr->instanceShaderBindingTableRecordOffset = 2; // here we set 2 because we have shade/shadow shaders for the first instance
+			instance_ptr->instanceShaderBindingTableRecordOffset = m_model_parts.size()*2; // here we set 2 because we have shade/shadow shaders for the first instance
 			instance_ptr->accelerationStructureReference = vk_helpers::get_acceleration_structure_address(m_device, m_bottom_as_spheres.structure);;
 		}
 
@@ -2655,8 +2693,11 @@ void BaseApplication::create_shader_binding_table()
 	fprintf(stdout, "max recursion depth %u\n", props.maxRayRecursionDepth);
 	
 	const uint32_t num_raygen = 1;
-	const uint32_t num_hitgroups = 4;
-	const uint32_t num_miss = 2;
+    const uint32_t num_triangle_geometries = m_model_parts.size();
+    const uint32_t num_sphere_geometries = 1;
+    const uint32_t num_ray_classes = 2; // shade/shadow
+	const uint32_t num_hitgroups = (num_triangle_geometries+num_sphere_geometries) * num_ray_classes;
+	const uint32_t num_miss = num_ray_classes;
 	VkDeviceSize sz =
 		num_raygen * get_sbt_raygen_record_size() +
 		num_hitgroups * get_sbt_hit_record_size() +
@@ -2690,33 +2731,39 @@ void BaseApplication::create_shader_binding_table()
 	}
 	// write hitgroups
 	{
-		SBTRecordHitMesh mesh_rec;
-		mesh_rec.shader = handles[1];
-		mesh_rec.vertices_ref = vk_helpers::get_buffer_address(m_device, m_vertex_buffer.buffer);
-		mesh_rec.indices_ref = vk_helpers::get_buffer_address(m_device, m_index_buffer.buffer);
-		
-		ShaderGroupHandle mesh_occlusion_rec = handles[2];
-
-		SBTRecordHitSphere spheres_rec;
-		spheres_rec.shader = handles[3];
-		spheres_rec.spheres_ref = vk_helpers::get_buffer_address(m_device, m_sphere_buffer.buffer);
-
-		ShaderGroupHandle spheres_occlusion_rec = handles[4];
-
 		// hit groups
 		// triangles 
-		std::memcpy(data, &mesh_rec, sizeof(mesh_rec));
-		data += get_sbt_hit_record_size();
-		// triangles shadow
-		std::memcpy(data, &mesh_occlusion_rec, sizeof(mesh_occlusion_rec));
-		data += get_sbt_hit_record_size();
-		
-		// spheres
-		std::memcpy(data, &spheres_rec, sizeof(spheres_rec));
-		data += get_sbt_hit_record_size();
-		// spheres shadow
-		std::memcpy(data, &spheres_occlusion_rec, sizeof(spheres_occlusion_rec));
-		data += get_sbt_hit_record_size();
+        for (const ModelPart &part : m_model_parts) {
+            SBTRecordHitMesh mesh_rec;
+            mesh_rec.shader = handles[1];
+            mesh_rec.vertices_ref = sizeof(Vertex)*part.vertex_offset +
+                vk_helpers::get_buffer_address(m_device, m_vertex_buffer.buffer);
+            mesh_rec.indices_ref = sizeof(uint32_t)*part.index_offset + 
+                vk_helpers::get_buffer_address(m_device, m_index_buffer.buffer);
+            mesh_rec.color = part.color;
+
+            ShaderGroupHandle mesh_occlusion_rec = handles[2];
+
+            std::memcpy(data, &mesh_rec, sizeof(mesh_rec));
+            data += get_sbt_hit_record_size();
+            // triangles shadow
+            std::memcpy(data, &mesh_occlusion_rec, sizeof(mesh_occlusion_rec));
+            data += get_sbt_hit_record_size();
+        }
+        {
+            SBTRecordHitSphere spheres_rec;
+            spheres_rec.shader = handles[3];
+            spheres_rec.spheres_ref = vk_helpers::get_buffer_address(m_device, m_sphere_buffer.buffer);
+
+            ShaderGroupHandle spheres_occlusion_rec = handles[4];
+
+            // spheres
+            std::memcpy(data, &spheres_rec, sizeof(spheres_rec));
+            data += get_sbt_hit_record_size();
+            // spheres shadow
+            std::memcpy(data, &spheres_occlusion_rec, sizeof(spheres_occlusion_rec));
+            data += get_sbt_hit_record_size();
+        }
 	}
 	// write miss groups
 	{
@@ -2840,7 +2887,9 @@ void BaseApplication::create_command_buffers()
 		vkCmdBindIndexBuffer(m_cmd_buffers[i], m_index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdBindDescriptorSets(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout,
 								0, 1, &m_desc_sets[i], 0, nullptr);
-		vkCmdDrawIndexed(m_cmd_buffers[i], uint32_t(m_model_indices.size()), 1, 0 , 0, 0);
+        for (auto p : m_model_parts) {
+            vkCmdDrawIndexed(m_cmd_buffers[i], p.index_count, 1, p.index_offset, p.vertex_offset, 0);
+        }
 
 		vkCmdEndRenderPass(m_cmd_buffers[i]);
 
@@ -2887,9 +2936,12 @@ void BaseApplication::create_rt_command_buffers()
 		const size_t raygen_stride = get_sbt_raygen_record_size();
 		const size_t hitgroup_stride = get_sbt_hit_record_size();
 		const size_t miss_stride = get_sbt_miss_record_size();
-		size_t num_raygen = 1;
-		size_t num_hitgroups = 4;
-		size_t num_miss = 2;
+        const uint32_t num_raygen = 1;
+        const uint32_t num_triangle_geometries = m_model_parts.size();
+        const uint32_t num_sphere_geometries = 1;
+        const uint32_t num_ray_classes = 2; // shade/shadow
+        const uint32_t num_hitgroups = (num_triangle_geometries+num_sphere_geometries) * num_ray_classes;
+        const uint32_t num_miss = num_ray_classes;
 		size_t raygen_offset = 0;
 		size_t hitgroups_offset = raygen_stride * num_raygen;
 		size_t miss_offset = hitgroups_offset + hitgroup_stride * num_hitgroups;
