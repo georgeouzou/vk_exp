@@ -68,7 +68,7 @@ struct ASBuffers
 		vmaDestroyBuffer(allocator, structure_buffer.buffer, structure_buffer.alloc);
 		vmaDestroyBuffer(allocator, scratch_buffer.buffer, scratch_buffer.alloc);
 		vmaDestroyBuffer(allocator, instances_buffer.buffer, instances_buffer.alloc);
-		std::memset(this, VK_NULL_HANDLE, sizeof(ASBuffers));
+		std::memset(this, 0, sizeof(ASBuffers));
 	}
 };
 
@@ -2109,7 +2109,7 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 	geom_aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
 	geom_aabbs.stride = sizeof(SpherePrimitive);
 	// for now 
-	geom_aabbs.data.deviceAddress = VK_NULL_HANDLE;
+	geom_aabbs.data.deviceAddress = 0;
 
 	VkAccelerationStructureBuildGeometryInfoKHR build_info = {};
 	build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
@@ -2121,7 +2121,7 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 	// for now
 	build_info.srcAccelerationStructure = VK_NULL_HANDLE;
 	build_info.dstAccelerationStructure = VK_NULL_HANDLE;
-	build_info.scratchData.deviceAddress = VK_NULL_HANDLE;
+	build_info.scratchData.deviceAddress = 0;
 
 	const uint32_t max_primitive_counts[1] = { uint32_t(m_sphere_primitives.size()) };
 
@@ -2184,7 +2184,7 @@ void BaseApplication::create_top_acceleration_structure()
 	geom_instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
 	geom_instances.arrayOfPointers = VK_FALSE;
 	// for now 
-	geom_instances.data.deviceAddress = VK_NULL_HANDLE;
+	geom_instances.data.deviceAddress = 0;
 
 	VkAccelerationStructureBuildGeometryInfoKHR build_info = {};
 	build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
@@ -2196,7 +2196,7 @@ void BaseApplication::create_top_acceleration_structure()
 	// for now
 	build_info.srcAccelerationStructure = VK_NULL_HANDLE;
 	build_info.dstAccelerationStructure = VK_NULL_HANDLE;
-	build_info.scratchData.deviceAddress = VK_NULL_HANDLE;
+	build_info.scratchData.deviceAddress = 0;
 
 	const uint32_t max_primitive_counts[1] = { 2 };
 
