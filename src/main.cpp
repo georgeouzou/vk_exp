@@ -2922,6 +2922,7 @@ void BaseApplication::create_rt_command_buffers()
 			VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
 			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
+#if 0
 		VkImageCopy cpy = {};
 		cpy.dstOffset = { 0, 0, 0 };
 		cpy.srcOffset = { 0, 0, 0 };
@@ -2932,6 +2933,18 @@ void BaseApplication::create_rt_command_buffers()
 		vkCmdCopyImage(m_rt_cmd_buffers[i],
 			m_rt_img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+#endif
+
+        VkImageBlit blit = {};
+        blit.dstOffsets[0] = { 0, 0, 0 };
+        blit.dstOffsets[1] = { int32_t(m_width), int32_t(m_height), 1 };
+        blit.srcOffsets[0] = { 0, 0, 0 };
+        blit.srcOffsets[1] = { int32_t(m_width), int32_t(m_height), 1 };
+        blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        vkCmdBlitImage(m_rt_cmd_buffers[i],
+                m_rt_img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
 
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
 			VK_ACCESS_TRANSFER_WRITE_BIT, 0,

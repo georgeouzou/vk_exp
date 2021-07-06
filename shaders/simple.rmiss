@@ -16,5 +16,5 @@ layout(location = 0) rayPayloadInEXT HitPayload payload;
 
 void main()
 {	
-	payload.color_dist = vec4(1.0, 0.7, 0.5, -1.0);
+	payload.color_dist = vec4(0.5, 0.8, 0.9, -1.0);
 }
