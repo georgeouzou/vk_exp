@@ -3,23 +3,7 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 
-struct HitPayload
-{
-	vec4 color_dist;
-	int depth;
-};
-
-struct ShadowPayload
-{
-	float in_shadow;
-};
-
-struct TriVertex
-{
-	vec4 pos;
-	vec4 normal;
-	vec4 tex_coord;
-};
+#include "common.glsl"
 
 layout(buffer_reference, scalar, buffer_reference_align = 8) buffer VertexBuffer
 {
@@ -31,18 +15,12 @@ layout(buffer_reference, scalar, buffer_reference_align = 4) buffer IndexBuffer
 	uvec3 indices[];
 };
 
-
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
-layout(binding = 2) uniform GlobalUniforms
+layout(set = 0, binding = 2, std140) uniform SceneUniformsBlock 
 {
-	mat4 model;
-	mat4 view;
-	mat4 proj;
-	mat4 iview;
-	mat4 iproj;
-	vec4 light_pos;
-} ubo;
+	SceneUniforms ubo;
+};
 
 layout(shaderRecordEXT, std430) buffer ShaderRecord
 {

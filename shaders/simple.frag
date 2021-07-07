@@ -3,15 +3,12 @@
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_ray_query : require
 
-layout(binding = 0) uniform CameraMatrices 
+#include "common.glsl"
+
+layout(set = 0, binding = 0, std140) uniform SceneUniformsBlock 
 {
-	mat4 model;
-	mat4 view;
-	mat4 proj;
-	mat4 iview;
-	mat4 iproj;
-	vec4 light_pos;
-} ubo;
+	SceneUniforms ubo;
+};
 
 layout(set = 0, binding = 1) uniform accelerationStructureEXT scene;
 

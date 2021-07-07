@@ -1,16 +1,7 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
-struct HitPayload
-{
-	vec4 color_dist;
-	int depth;
-};
-
-struct Attributes
-{
-	vec2 bary;
-};
+#include "common.glsl"
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
 

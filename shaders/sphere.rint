@@ -3,18 +3,7 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 
-struct SpherePrimitive
-{
-	vec4 albedo;
-	float aabb_minx;
-	float aabb_miny;
-	float aabb_minz;
-	float aabb_maxx;
-	float aabb_maxy;
-	float aabb_maxz;
-	int material;
-	float fuzz;
-};
+#include "common.glsl"
 
 layout(buffer_reference, scalar, buffer_reference_align = 8) buffer SphereBuffer
 {
@@ -24,13 +13,13 @@ layout(buffer_reference, scalar, buffer_reference_align = 8) buffer SphereBuffer
 layout(shaderRecordEXT, std430) buffer ShaderRecord
 {
 	SphereBuffer sphere_buffer;
-} shader_record;
+};
 
 hitAttributeEXT vec3 sphere_point;
 
 void main()
 {
-	SpherePrimitive sph = shader_record.sphere_buffer.spheres[gl_PrimitiveID];
+	SpherePrimitive sph = sphere_buffer.spheres[gl_PrimitiveID];
 	vec3 orig = gl_WorldRayOriginEXT;
 	vec3 dir = gl_WorldRayDirectionEXT;
 	

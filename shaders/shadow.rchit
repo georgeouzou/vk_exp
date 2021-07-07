@@ -1,10 +1,7 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
-struct ShadowPayload
-{
-	float in_shadow;
-};
+#include "common.glsl"
 
 layout(location = 1) rayPayloadInEXT ShadowPayload shadow_payload;
 

@@ -3,28 +3,13 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 
-struct HitPayload
-{
-	vec4 color_dist;
-	float depth;
-};
+#include "common.glsl"
 
-struct ShadowPayload
-{
-	float in_shadow;
-};
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
-struct SpherePrimitive
+layout(set = 0, binding = 2, std140) uniform SceneUniformsBlock 
 {
-	vec4 albedo;
-	float aabb_minx;
-	float aabb_miny;
-	float aabb_minz;
-	float aabb_maxx;
-	float aabb_maxy;
-	float aabb_maxz;
-	int material;
-	float fuzz;
+	SceneUniforms ubo;
 };
 
 layout(buffer_reference, scalar, buffer_reference_align = 8) buffer SphereBuffer
@@ -32,22 +17,10 @@ layout(buffer_reference, scalar, buffer_reference_align = 8) buffer SphereBuffer
 	SpherePrimitive spheres[];
 };
 
-layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
-
-layout(binding = 2) uniform GlobalUniforms
-{
-	mat4 model;
-	mat4 view;
-	mat4 proj;
-	mat4 iview;
-	mat4 iproj;
-	vec4 light_pos;
-} ubo;
-
 layout(shaderRecordEXT, std430) buffer ShaderRecord
 {
 	SphereBuffer sphere_buffer;
-} shader_record;
+};
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
 layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
@@ -55,7 +28,7 @@ hitAttributeEXT vec3 sphere_point;
 
 void main()
 {
-	SpherePrimitive sph = shader_record.sphere_buffer.spheres[gl_PrimitiveID];
+	SpherePrimitive sph = sphere_buffer.spheres[gl_PrimitiveID];
 	const vec3 aabb_max = vec3(sph.aabb_maxx, sph.aabb_maxy, sph.aabb_maxz);
 	const vec3 aabb_min = vec3(sph.aabb_minx, sph.aabb_miny, sph.aabb_minz);
 	const vec3 center = (aabb_max + aabb_min) / vec3(2.0);

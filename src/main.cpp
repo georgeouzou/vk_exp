@@ -17,7 +17,7 @@
 #include <cassert>
 
 #include <volk.h>
-#include <shaderc/shaderc.h>
+#include <shaderc/shaderc.hpp>
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
@@ -89,7 +89,7 @@ struct QueueFamilyIndices
 
 struct SwapchainSupportDetails
 {
-	VkSurfaceCapabilitiesKHR capabilities;
+	VkSurfaceCapabilitiesKHR capabilities{};
 	std::vector<VkSurfaceFormatKHR> formats;
 	std::vector<VkPresentModeKHR> present_modes;
 };
@@ -353,7 +353,7 @@ private:
 	size_t m_current_frame_idx{ 0 };
 	bool m_window_resized{ false };
 
-	shaderc_compiler_t m_shader_compiler{ nullptr };
+	shaderc::Compiler m_shader_compiler;
 
 	VkInstance m_instance{ VK_NULL_HANDLE };
 	VkDebugUtilsMessengerEXT m_debug_callback{ VK_NULL_HANDLE };
@@ -637,12 +637,14 @@ void BaseApplication::init_window()
 void BaseApplication::init_vulkan()
 {
 	auto res = volkInitialize();
-	if (res != VK_SUCCESS) throw std::runtime_error("could not initialize volk");
+	if (res != VK_SUCCESS) 
+		throw std::runtime_error("could not initialize volk");
 
 	create_instance();
 	volkLoadInstance(m_instance);
-	// initialize compiler
-	m_shader_compiler = shaderc_compiler_initialize();
+	// check if compiler is initialized and valid
+	if (!m_shader_compiler.IsValid()) 
+		throw std::runtime_error("could not initialize shaderc compiler");
 
 	if (m_enable_validation_layers) {
 		setup_debug_callback();
@@ -746,10 +748,14 @@ void BaseApplication::cleanup_swapchain()
 	vkDestroyDescriptorPool(m_device, m_desc_pool, nullptr);
 	
 	if (m_graphics_cmd_pool) {
-		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-			static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
-		vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
-			static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+		if (m_rt_cmd_buffers.size()) {
+			vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+				static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
+		}
+		if (m_cmd_buffers.size()) {
+			vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+				static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
+		}
 	}
 
 	for (auto fb : m_swapchain_fbs) {
@@ -812,11 +818,8 @@ void BaseApplication::cleanup()
 	if (m_instance) 
 		vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
 	
-	if (m_shader_compiler) 
-		shaderc_compiler_release(m_shader_compiler);
-
 	destroy_debug_callback();
-
+	
 	vkDestroyInstance(m_instance, nullptr);
 
 	if (m_window) 
@@ -1552,37 +1555,62 @@ void BaseApplication::create_graphics_pipeline()
 	vkDestroyShaderModule(m_device, frag_module, nullptr);
 }
 
-VkShaderModule BaseApplication::create_shader_module(const std::string &file_name, shaderc_shader_kind shader_kind, const std::vector<char>& code) const
+class ShaderIncluder : public shaderc::CompileOptions::IncluderInterface
 {
-	shaderc_compile_options_t opts = shaderc_compile_options_initialize();
-	shaderc_compile_options_set_generate_debug_info(opts);
-	shaderc_compile_options_set_optimization_level(opts, shaderc_optimization_level_zero);
-	shaderc_compile_options_set_target_env(opts, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
-    shaderc_compile_options_set_target_spirv(opts, shaderc_spirv_version_1_5);
-
-	shaderc_compilation_result_t result = shaderc_compile_into_spv(m_shader_compiler,
-		code.data(), code.size(), shader_kind, file_name.c_str(), "main", opts);
-	
-	if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
-		
-		fprintf(stdout, "SHADERC COMPILE ERROR\n%s", shaderc_result_get_error_message(result));
-		shaderc_compile_options_release(opts);
-		shaderc_result_release(result);
-
-		throw std::runtime_error("failed to compile shader");
+public:
+	virtual shaderc_include_result* GetInclude(const char* requested_source,
+		shaderc_include_type type,
+		const char* requesting_source,
+		size_t include_depth) override
+	{
+		assert(type == shaderc_include_type_relative);
+		std::string filename = SHADER_DIR + std::string(requested_source);
+		auto data = read_file(filename.c_str());
+		std::string source { data.begin(), data.end() };
+		auto [it, inserted] = m_includes.insert({ filename, source });
+		return new shaderc_include_result{
+			it->first.c_str(),
+			it->first.size(),
+			it->second.c_str(),
+			it->second.size(),
+			nullptr
+		};
 	}
 
-	size_t num_bytes = shaderc_result_get_length(result);
+	virtual void ReleaseInclude(shaderc_include_result* data) override
+	{
+		delete data;
+		// the map will free the real data in the destructor
+	}
 
+private:
+	std::unordered_map<std::string, std::string> m_includes;
+};
+
+VkShaderModule BaseApplication::create_shader_module(const std::string &file_name, 
+	shaderc_shader_kind shader_kind, const std::vector<char>& code) const
+{
+	shaderc::CompileOptions opts;
+	opts.SetGenerateDebugInfo();
+	opts.SetOptimizationLevel(shaderc_optimization_level_zero);
+	opts.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+	opts.SetIncluder(std::make_unique<ShaderIncluder>());
+	
+	std::string source{ code.begin(), code.end() };
+	auto result = m_shader_compiler.CompileGlslToSpv(source, shader_kind, file_name.c_str(), opts);
+	
+	if (result.GetCompilationStatus() != shaderc_compilation_status_success) {
+		fprintf(stdout, "SHADERC COMPILE ERROR\n%s", result.GetErrorMessage().c_str());
+		throw std::runtime_error("failed to compile shader");
+	}
+	
 	VkShaderModuleCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-	ci.codeSize = num_bytes;
+	ci.codeSize = (result.cend() - result.cbegin()) * sizeof(uint32_t);
 	// cast bytes to uints
-	ci.pCode = reinterpret_cast<const uint32_t*>(shaderc_result_get_bytes(result));
+	ci.pCode = result.cbegin();
 	VkShaderModule shader_module;
 	auto res = vkCreateShaderModule(m_device, &ci, nullptr, &shader_module);
-	shaderc_compile_options_release(opts);
-	shaderc_result_release(result);
 
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to create shader module");
