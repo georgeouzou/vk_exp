@@ -37,4 +37,32 @@ float random_float(inout uint seed)
     return (float(random_lcg(seed)) / float(0x01000000));
 }
 
+vec3 random_in_unit_sphere(inout uint seed)
+{
+	vec3 p;
+    uint loops = 16;
+    while (loops-- > 0u) {
+	    float x = random_float(seed);
+	    float y = random_float(seed);
+	    float z = random_float(seed);
+	    p = 2.0 * vec3(x, y, z) - vec3(1.0);
+        if (length(p) < 1) break;
+    }
+    return p;
+}
+
+vec3 random_unit_vector(inout uint seed)
+{
+    return normalize(random_in_unit_sphere(seed));
+}
+
+vec3 random_in_hemisphere(inout uint seed, vec3 normal)
+{
+    vec3 in_sphere = random_in_unit_sphere(seed);
+    bool same_hemisphere = dot(in_sphere, normal) > 0.0;
+    in_sphere *= same_hemisphere ? 1.0 : -1.0;
+    return in_sphere;
+}
+
+
 #endif //RANDOM_H_GLSL

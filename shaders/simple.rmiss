@@ -7,5 +7,7 @@ layout(location = 0) rayPayloadInEXT HitPayload payload;
 
 void main()
 {	
-	payload.color_dist = vec4(0.5, 0.8, 0.9, -1.0);
+    float t = float(gl_LaunchIDEXT.y) / float(gl_LaunchSizeEXT.y);
+    payload.color.rgb = mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
+    payload.color.a = 1.0;
 }

@@ -3,7 +3,8 @@
 
 struct HitPayload
 {
-	vec4 color_dist;
+	vec4 color;
+	uint seed;
 	int depth;
 };
 

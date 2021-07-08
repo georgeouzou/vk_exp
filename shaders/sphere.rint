@@ -40,7 +40,8 @@ void main()
 		const float t1 = (-b - sqrt(discr)) / a;
 		const float t2 = (-b + sqrt(discr)) / a;
 		bool first = (gl_RayTminEXT <= t1) && (t1 < gl_RayTmaxEXT);
-		bool second = (gl_RayTminEXT <= t2) && (t2 < gl_RayTmaxEXT);
+		// normally the following must be checked but has artifacts for now just set to false
+		bool second = false; // (gl_RayTminEXT <= t2) && (t2 < gl_RayTmaxEXT); 
 		if (first || second) {
 			t = first ? t1 : t2;
 		}

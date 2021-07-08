@@ -1970,8 +1970,8 @@ void BaseApplication::create_spheres()
 	// add a really big one
 	{
 		SpherePrimitive earth = {};
-		glm::vec3 center = glm::vec3(0.0, 0.0, -30000);
-		float radius = 30000;
+		glm::vec3 center = glm::vec3(0.0, 0.0, -3000-0.01);
+		float radius = 3000;
 		glm::vec3 aabb_min = center - glm::vec3(radius);
 		glm::vec3 aabb_max = center + glm::vec3(radius);
 		earth.bbox.minX = aabb_min.x;
@@ -2542,7 +2542,7 @@ void BaseApplication::create_raytracing_pipeline()
 	ci.pStages = stages.data();
 	ci.groupCount = uint32_t(groups.size());
 	ci.pGroups = groups.data();
-	ci.maxPipelineRayRecursionDepth = 4;
+	ci.maxPipelineRayRecursionDepth = 16;
 	ci.pLibraryInfo = &libci;
 	ci.pLibraryInterface = nullptr;
 	ci.layout = m_rt_pipeline_layout;
