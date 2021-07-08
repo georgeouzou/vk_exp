@@ -5,6 +5,7 @@ Experimenting with vulkan basics and ray tracing features
 Based on
 - https://vulkan-tutorial.com/ 
 - the vulkan spec
+- material shading of [_Ray Tracing in One Weekend_](https://raytracing.github.io/books/RayTracingInOneWeekend.html)
 
 To run you need to have a gpu that supports the latest vulkan KHR raytracing
 
@@ -28,5 +29,3 @@ The code uses the following dependencies:
 * [volk](https://github.com/zeux/volk)
 
 Models downloaded from Morgan McGuire's [Computer Graphics Archive](https://casual-effects.com/data)
-
-Material shading is based on [_Ray Tracing in One Weekend_](https://raytracing.github.io/books/RayTracingInOneWeekend.html)
