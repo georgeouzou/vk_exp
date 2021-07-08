@@ -1964,6 +1964,7 @@ void BaseApplication::create_spheres()
 			sphere.bbox.maxZ = aabb_max.z;
 			sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
 			sphere.material = rgen() > 0.85f ? 1 : 0;
+			sphere.fuzz = rgen();
 			m_sphere_primitives.push_back(sphere);
 		}
 	}
@@ -2542,7 +2543,7 @@ void BaseApplication::create_raytracing_pipeline()
 	ci.pStages = stages.data();
 	ci.groupCount = uint32_t(groups.size());
 	ci.pGroups = groups.data();
-	ci.maxPipelineRayRecursionDepth = 16;
+	ci.maxPipelineRayRecursionDepth = 15;
 	ci.pLibraryInfo = &libci;
 	ci.pLibraryInterface = nullptr;
 	ci.layout = m_rt_pipeline_layout;

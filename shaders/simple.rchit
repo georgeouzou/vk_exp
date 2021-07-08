@@ -59,16 +59,28 @@ void main()
 
 	const vec3 hit_pos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
 	
-	vec3 scatter_dir = random_in_hemisphere(payload.seed, hit_normal);
-		
-	if (payload.depth < 16) {
-		const uint ray_flags = gl_RayFlagsOpaqueEXT;
-		payload.depth += 1;
-		traceRayEXT(scene, ray_flags, 0xFF, 0, 2, 0, hit_pos, 0.001, scatter_dir, 100.0, 0);
+	bool metallic = true;
+	vec3 scatter_dir;
+	bool scatter;
+	if (metallic) {
+		vec3 reflected = reflect(gl_WorldRayDirectionEXT, hit_normal);
+		scatter_dir = reflected + 0.3*random_in_unit_sphere(payload.seed);
+		scatter = dot(scatter_dir, hit_normal) > 0.0;
+	} else {
+		scatter_dir = random_in_hemisphere(payload.seed, hit_normal);
+		scatter = true;
+	}
+	
+	const uint ray_flags = gl_RayFlagsOpaqueEXT;
+	payload.depth += 1;
+	bool can_recurse = payload.depth < 16; // or 15 ???
+	uint mask = can_recurse && scatter ? 0xFF : 0;
+	traceRayEXT(scene, ray_flags, mask, 0, 2, 0, hit_pos, 0.001, scatter_dir, 100.0, 0);
+	if (can_recurse && scatter) {
 		vec3 in_color = payload.color.rgb;
 		color = in_color * color;
 	} else {
-		color = vec3(0.1); // stop accumulating light
+		color = vec3(0.0); // stop accumulating light
 	}
 	
 	//const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
