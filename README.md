@@ -28,3 +28,4 @@ The code uses the following dependencies:
 * [volk](https://github.com/zeux/volk)
 
 Models downloaded from Morgan McGuire's [Computer Graphics Archive](https://casual-effects.com/data)
+Material shading is based on [_Ray Tracing in One Weekend_](https://raytracing.github.io/books/RayTracingInOneWeekend.html)
