@@ -47,4 +47,13 @@ struct TriVertex
 	vec4 tex_coord;
 };
 
+struct PBRMaterial 
+{
+	vec4 albedo;
+	float metallic;
+	float roughness;
+	float pad0;
+	float pad1;
+};
+
 #endif //COMMON_H_GLSL

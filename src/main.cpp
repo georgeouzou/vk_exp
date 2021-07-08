@@ -24,7 +24,9 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/hash.hpp>
+
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
 
@@ -32,6 +34,7 @@
 #include "stb_image.h"
 #include "orbit_camera.h"
 #include "shader_dir.h"
+#include "materials.hpp"
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 #define ENABLE_VALIDATION_LAYERS
@@ -161,17 +164,11 @@ namespace std
 	};
 }
 
-enum Material
-{
-	MATERIAL_LAMBERTIAN,
-	MATERIAL_METAL
-};
-
 struct SpherePrimitive
 {
 	glm::vec4 albedo;
 	VkAabbPositionsKHR bbox;
-	int32_t material;
+	materials::MaterialType material; //int
 	float fuzz;
 };
 
@@ -197,7 +194,7 @@ struct ModelPart
     uint32_t vertex_count;
     uint32_t index_offset;
     uint32_t index_count;
-    glm::vec4 color;
+	materials::PBRMaterial pbr_material;
 };
 
 struct SBTRecordHitMesh
@@ -205,7 +202,7 @@ struct SBTRecordHitMesh
 	ShaderGroupHandle shader;
 	VkDeviceAddress vertices_ref;
 	VkDeviceAddress indices_ref;
-    glm::vec4 color;
+	materials::PBRMaterial pbr_material;
 };
 
 struct SBTRecordHitSphere
@@ -234,11 +231,6 @@ constexpr size_t get_sbt_raygen_record_size()
 	// round up to 64
 	return ((sz + 63) / 64) * 64;
 }
-
-static_assert(get_sbt_hit_record_size() == get_sbt_raygen_record_size());
-static_assert(get_sbt_hit_record_size() == get_sbt_miss_record_size());
-static_assert(get_sbt_hit_record_size() == 64);
-
 
 class BaseApplication
 {
@@ -1905,10 +1897,24 @@ void BaseApplication::load_model()
         part_info.vertex_count = part_vertices.size();
         part_info.index_offset = index_offset;
         part_info.index_count = part_indices.size();
-        const float *mat = materials[part.mesh.material_ids[0]].diffuse;
-        part_info.color = glm::vec4(mat[0], mat[1], mat[2], 1.0);
+
+		// set material
+		tinyobj::material_t tmat = materials[part.mesh.material_ids[0]];
+		materials::MTLMaterial mtl; 
+		mtl.diffuse_color = glm::make_vec3(&tmat.diffuse[0]);
+		mtl.ns = tmat.shininess;
+		mtl.specular_color = glm::make_vec3(&tmat.specular[0]);
+		
+		part_info.pbr_material = materials::convert_mtl_to_pbr(mtl);
+		part_info.pbr_material.albedo.a = tmat.dissolve;
         m_model_parts.push_back(part_info);
-        printf("Add part {v0 %u, vc %u, i0 %u, ic %u}\n", part_info.vertex_offset, part_info.vertex_count, part_info.index_offset, part_info.index_count);
+        printf("Add part %s {v0 %u, vc %u, i0 %u, ic %u}\t material [albedo {%.2f, %.2f, %.2f, %.2f}, metallic %.2f, roughness %.2f\n",
+			part.name.c_str(),
+			part_info.vertex_offset, part_info.vertex_count, part_info.index_offset, part_info.index_count,
+			part_info.pbr_material.albedo.r, part_info.pbr_material.albedo.g, 
+			part_info.pbr_material.albedo.b, part_info.pbr_material.albedo.a,
+			part_info.pbr_material.metallic, part_info.pbr_material.roughness);
+
 	}
     fprintf(stdout, "Loaded model part: num vertices %" PRIu64 ", num indices %" PRIu64 "\n",
         m_model_vertices.size(),
@@ -1963,7 +1969,7 @@ void BaseApplication::create_spheres()
 			sphere.bbox.maxY = aabb_max.y;
 			sphere.bbox.maxZ = aabb_max.z;
 			sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
-			sphere.material = rgen() > 0.85f ? 1 : 0;
+			sphere.material = materials::MaterialType(rgen() > 0.85f ? 1 : 0);
 			sphere.fuzz = rgen();
 			m_sphere_primitives.push_back(sphere);
 		}
@@ -1982,7 +1988,7 @@ void BaseApplication::create_spheres()
 		earth.bbox.maxY = aabb_max.y;
 		earth.bbox.maxZ = aabb_max.z;
 		earth.albedo = glm::vec4(0.2f, 0.4f, 0.6f, 1.0f);
-		earth.material = MATERIAL_LAMBERTIAN;
+		earth.material = materials::MaterialType::LAMBERTIAN;
 		m_sphere_primitives.push_back(earth);
 	}
 	
@@ -2782,7 +2788,7 @@ void BaseApplication::create_shader_binding_table()
                 vk_helpers::get_buffer_address(m_device, m_vertex_buffer.buffer);
             mesh_rec.indices_ref = sizeof(uint32_t)*part.index_offset + 
                 vk_helpers::get_buffer_address(m_device, m_index_buffer.buffer);
-            mesh_rec.color = part.color;
+			mesh_rec.pbr_material = part.pbr_material;
 
             ShaderGroupHandle mesh_occlusion_rec = handles[2];
 

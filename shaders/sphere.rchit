@@ -51,16 +51,17 @@ void main()
 		scatter = true;
 	}
 
-	vec3 color = sph.albedo.rgb;
+	const vec3 attenuation = sph.albedo.rgb;
 
 	const uint ray_flags = gl_RayFlagsOpaqueEXT;
 	payload.depth += 1;
 	bool can_recurse = payload.depth < 16; // or 15 ???
 	uint mask = can_recurse && scatter ? 0xFF : 0;
 	traceRayEXT(scene, ray_flags, mask, 0, 2, 0, hit_pos, 0.001, scatter_dir, 100.0, 0);
+	vec3 color;
 	if (can_recurse && scatter) {
 		vec3 in_color = payload.color.rgb;
-		color = in_color * color;
+		color = in_color * attenuation;
 	} else {
 		color = vec3(0.0); // stop accumulating light
 	}

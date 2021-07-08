@@ -6,6 +6,9 @@
 #include "common.glsl"
 #include "random.glsl"
 
+// Code for materials is based on:
+// https://raytracing.github.io/books/RayTracingInOneWeekend.html
+
 layout(buffer_reference, scalar, buffer_reference_align = 8) buffer VertexBuffer
 {
 	TriVertex vertices[];
@@ -27,7 +30,7 @@ layout(shaderRecordEXT, std430) buffer ShaderRecord
 {
 	VertexBuffer vertex_buffer;
 	IndexBuffer index_buffer;
-    vec4 part_color;
+    PBRMaterial material;
 } shader_record;
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
@@ -52,23 +55,50 @@ vec3 fetch_normal(uint primitive_id)
 	return norm;
 }
 
+
+float reflectance(float cosine, float ref_idx)
+{
+	// Use Schlick's approximation for reflectance.
+	float r0 = (1.0-ref_idx) / (1.0+ref_idx);
+	r0 = r0*r0;
+	return r0 + (1.0-r0)*pow((1-cosine), 5.0);
+}
+
 void main()
 {
-	vec3 color = shader_record.part_color.rgb;
 	const vec3 hit_normal = fetch_normal(gl_PrimitiveID);
+	const PBRMaterial material = shader_record.material;
 
 	const vec3 hit_pos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
 	
-	bool metallic = true;
+	const bool metallic = material.metallic > 0.3;
+	const bool transparent = material.albedo.a < 1.0;
 	vec3 scatter_dir;
 	bool scatter;
-	if (metallic) {
+	vec3 attenuation;
+	if (transparent) {
+		const float ior = 1.5;
+		const float ratio = gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT ? (1.0 / ior) : ior;
+		const float cos_theta = min(dot(-gl_WorldRayDirectionEXT, hit_normal), 1.0);
+		const float sin_theta = sqrt(1.0 - cos_theta*cos_theta);
+		const bool cannot_refract = ratio * sin_theta > 1.0;
+		const float reflectance =  reflectance(cos_theta, ratio);
+		if (cannot_refract || reflectance > random_float(payload.seed)) {
+			scatter_dir = reflect(gl_WorldRayDirectionEXT, hit_normal);
+		} else {
+			scatter_dir = refract(gl_WorldRayDirectionEXT, hit_normal, ratio);
+		}
+		scatter = true;
+		attenuation = vec3(1.0);
+	} else if (metallic) {
 		vec3 reflected = reflect(gl_WorldRayDirectionEXT, hit_normal);
-		scatter_dir = reflected + 0.3*random_in_unit_sphere(payload.seed);
+		scatter_dir = reflected + material.roughness*random_in_unit_sphere(payload.seed);
 		scatter = dot(scatter_dir, hit_normal) > 0.0;
+		attenuation = material.albedo.rgb;
 	} else {
 		scatter_dir = random_in_hemisphere(payload.seed, hit_normal);
 		scatter = true;
+		attenuation = material.albedo.rgb;
 	}
 	
 	const uint ray_flags = gl_RayFlagsOpaqueEXT;
@@ -76,9 +106,10 @@ void main()
 	bool can_recurse = payload.depth < 16; // or 15 ???
 	uint mask = can_recurse && scatter ? 0xFF : 0;
 	traceRayEXT(scene, ray_flags, mask, 0, 2, 0, hit_pos, 0.001, scatter_dir, 100.0, 0);
+	vec3 color;
 	if (can_recurse && scatter) {
 		vec3 in_color = payload.color.rgb;
-		color = in_color * color;
+		color = in_color * attenuation;
 	} else {
 		color = vec3(0.0); // stop accumulating light
 	}
