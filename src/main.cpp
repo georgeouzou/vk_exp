@@ -177,15 +177,18 @@ struct SpherePrimitive
 
 static_assert(sizeof(SpherePrimitive) % 8 == 0 && "We have chosen SpherePrimitives to have an alignment of 8");
 
-struct GlobalUniforms
+struct SceneUniforms
 {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
 	glm::mat4 iview;
 	glm::mat4 iproj;
-
 	glm::vec4 light_pos;
+	uint32_t samples_accum;
+	uint32_t pad0;
+	uint32_t pad1;
+	uint32_t pad2;
 };
 
 struct ModelPart
@@ -243,8 +246,10 @@ public:
 	BaseApplication();
 	~BaseApplication();
 	void run();
-	void set_window_resized() { m_window_resized = true; }
-	void toggle_raytracing() { m_raytraced = !m_raytraced; }
+	void on_window_resized() { m_window_resized = true; }
+	void on_accumulated_samples_reset() { m_samples_accumulated = 0; };
+	void on_toggle_raytracing() { m_raytraced = !m_raytraced; }
+	
 	OrbitCamera &camera() { return m_camera; }
 
 private:
@@ -341,9 +346,9 @@ private:
 
 private:
 	GLFWwindow *m_window{ nullptr };
-	uint32_t m_width{ 1024 };
-	uint32_t m_height{ 768 };
-	bool m_raytraced{ false };
+	uint32_t m_width{ 1920 };
+	uint32_t m_height{ 1080 };
+	bool m_raytraced{ true };
 	OrbitCamera m_camera;
 
 	std::vector<const char*> m_validation_layers;
@@ -420,6 +425,8 @@ private:
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_img_available{ VK_NULL_HANDLE };
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_render_finished{ VK_NULL_HANDLE };
 	std::array<VkFence, MAX_FRAMES_IN_FLIGHT> m_fen_flight{ VK_NULL_HANDLE };
+
+	uint32_t m_samples_accumulated{ 0 };
 };
 
 static std::vector<char> read_file(const std::string &filename)
@@ -442,17 +449,19 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action, 
 		glfwSetWindowShouldClose(window, GLFW_TRUE);
 	} else if (key == GLFW_KEY_R && action == GLFW_PRESS) {
 		auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
-		app->toggle_raytracing();
+		app->on_toggle_raytracing();
+		app->on_accumulated_samples_reset();
 	}
 }
 
-static void mouse_buttom_callback(GLFWwindow *window, int button, int action, int mods)
+static void mouse_button_callback(GLFWwindow *window, int button, int action, int mods)
 {
 	if (action == GLFW_PRESS) {
 		auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
 		double xpos, ypos;
 		glfwGetCursorPos(window, &xpos, &ypos);
 		app->camera().set_mouse_position(-int(xpos), -int(ypos));
+		app->on_accumulated_samples_reset();
 	}
 }
 
@@ -467,6 +476,7 @@ static void mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
 
 	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
 	app->camera().mouse_move(-int(xpos), -int(ypos), ms);
+	app->on_accumulated_samples_reset();
 }
 
 static void mouse_scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
@@ -474,13 +484,15 @@ static void mouse_scroll_callback(GLFWwindow* window, double xoffset, double yof
 	(void)xoffset; // unused
 	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
 	app->camera().mouse_scroll(float(yoffset));
+	app->on_accumulated_samples_reset();
 }
 
 static void framebuffer_resize_callback(GLFWwindow *window, int width, int height)
 {
 	auto app = reinterpret_cast<BaseApplication*>(glfwGetWindowUserPointer(window));
-	app->set_window_resized();
+	app->on_window_resized();
 	app->camera().set_window_size(width, height);
+	app->on_accumulated_samples_reset();
 }
 
 namespace vk_helpers
@@ -588,6 +600,7 @@ void BaseApplication::run()
 BaseApplication::BaseApplication()
 {
 	m_validation_layers.push_back("VK_LAYER_KHRONOS_validation");
+	m_validation_layers.push_back("VK_LAYER_LUNARG_monitor");
 #if !defined(ENABLE_VALIDATION_LAYERS)
 	m_enable_validation_layers = false;
 #else 
@@ -614,14 +627,14 @@ void BaseApplication::init_window()
 		throw std::runtime_error("could not initialize glfw lib");
 	}
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	m_window = glfwCreateWindow(m_width, m_height, "tutorial", NULL, NULL);
+	m_window = glfwCreateWindow(m_width, m_height, "Vulkan Raytracing", NULL, NULL);
 	if (!m_window) {
 		throw std::runtime_error("could not create glfw window");
 	}
 
 	glfwSetKeyCallback(m_window, key_callback);
 	glfwSetFramebufferSizeCallback(m_window, framebuffer_resize_callback);
-	glfwSetMouseButtonCallback(m_window, mouse_buttom_callback);
+	glfwSetMouseButtonCallback(m_window, mouse_button_callback);
 	glfwSetCursorPosCallback(m_window, mouse_move_callback);
 	glfwSetScrollCallback(m_window, mouse_scroll_callback);
 	glfwSetWindowUserPointer(m_window, this);
@@ -2035,7 +2048,7 @@ void BaseApplication::create_index_buffer()
 
 void BaseApplication::create_uniform_buffers()
 {
-	VkDeviceSize bufsize = sizeof(GlobalUniforms);
+	VkDeviceSize bufsize = sizeof(SceneUniforms);
 	m_uni_buffers.resize(m_swapchain_images.size());
 
 	for (size_t i = 0; i < m_swapchain_images.size(); ++i) {
@@ -2622,7 +2635,7 @@ void BaseApplication::create_descriptor_sets()
 		VkDescriptorBufferInfo bi = {};
 		bi.buffer = m_uni_buffers[i].buffer;
 		bi.offset = 0;
-		bi.range = sizeof(GlobalUniforms);
+		bi.range = sizeof(SceneUniforms);
 
         VkWriteDescriptorSetAccelerationStructureKHR dw_rt = {};
 		dw_rt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
@@ -2678,7 +2691,7 @@ void BaseApplication::create_rt_descriptor_sets()
 		VkDescriptorBufferInfo ubi = {};
 		ubi.buffer = m_uni_buffers[i].buffer;
 		ubi.offset = 0;
-		ubi.range = sizeof(GlobalUniforms);
+		ubi.range = sizeof(SceneUniforms);
 
 		std::array<VkWriteDescriptorSet, 3> dw = {};
 
@@ -3071,10 +3084,11 @@ void BaseApplication::create_sync_objects()
 void BaseApplication::update_uniform_buffer(uint32_t idx)
 {
 	static auto start_time = std::chrono::high_resolution_clock::now();
-	auto curr_time = std::chrono::high_resolution_clock::now();
-	float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
+	//auto curr_time = std::chrono::high_resolution_clock::now();
+	//float time = std::chrono::duration<float, std::chrono::seconds::period>(curr_time - start_time).count();
+	float time = std::chrono::duration<float, std::chrono::seconds::period>(start_time.time_since_epoch()).count();
 
-	GlobalUniforms ubo = {};
+	SceneUniforms ubo = {};
 	ubo.model = m_model_tranformation;
 	//ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.view = m_camera.get_view_matrix();
@@ -3082,13 +3096,13 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 	ubo.proj[1][1] *= -1;
 	ubo.iview = glm::inverse(ubo.view);
 	ubo.iproj = glm::inverse(ubo.proj);
+	ubo.samples_accum = (m_samples_accumulated++);
 
 	ubo.light_pos = glm::vec4(4.0f * std::cos(time), 4.0f * std::sin(time), 5.0f, 1.0f);
-
 	void *data;
 	auto res = vmaMapMemory(m_allocator, m_uni_buffers[idx].alloc, &data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map uniform buffer memory");
-	std::memcpy(data, &ubo, sizeof(GlobalUniforms));
+	std::memcpy(data, &ubo, sizeof(SceneUniforms));
 	vmaUnmapMemory(m_allocator, m_uni_buffers[idx].alloc);
 }
 

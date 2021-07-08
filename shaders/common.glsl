@@ -1,3 +1,5 @@
+#ifndef COMMON_H_GLSL
+#define COMMON_H_GLSL
 
 struct HitPayload
 {
@@ -18,6 +20,10 @@ struct SceneUniforms
 	mat4 iview;
 	mat4 iproj;
 	vec4 light_pos;
+	uint samples_accum;
+	uint pad0;
+	uint pad1;
+	uint pad2;
 };
 
 struct SpherePrimitive
@@ -39,3 +45,5 @@ struct TriVertex
 	vec4 normal;
 	vec4 tex_coord;
 };
+
+#endif //COMMON_H_GLSL
