@@ -29,7 +29,6 @@ hitAttributeEXT vec3 sphere_point;
 
 void main()
 {
-	
 	SpherePrimitive sph = sphere_buffer.spheres[gl_PrimitiveID];
 	const vec3 aabb_max = vec3(sph.aabb_maxx, sph.aabb_maxy, sph.aabb_maxz);
 	const vec3 aabb_min = vec3(sph.aabb_minx, sph.aabb_miny, sph.aabb_minz);
@@ -40,13 +39,19 @@ void main()
 	const vec3 hit_pos = sphere_point;
 	
 	const bool metallic = sph.material == 1;
+	const bool emissive = sph.material == 2;
 	vec3 scatter_dir;
 	bool scatter;
+	vec3 emitted = vec3(0.0);
 	if (metallic) {
 		vec3 reflected = reflect(gl_WorldRayDirectionEXT, hit_normal);
-		scatter_dir = reflected + 0.3*random_in_unit_sphere(payload.seed);;
+		scatter_dir = reflected + sph.fuzz*random_in_unit_sphere(payload.seed);;
 		scatter = dot(scatter_dir, hit_normal) > 0.0;
-	} else {
+	} else if (emissive) {
+		emitted = sph.albedo.rgb;
+		scatter_dir = vec3(0.0);
+		scatter = false;
+	} else { // lambertian 
 		scatter_dir = random_in_hemisphere(payload.seed, hit_normal);
 		scatter = true;
 	}
@@ -56,13 +61,14 @@ void main()
 	const uint ray_flags = gl_RayFlagsOpaqueEXT;
 	payload.depth += 1;
 	bool can_recurse = payload.depth < 16; // or 15 ???
-	uint mask = can_recurse && scatter ? 0xFF : 0;
+	uint mask = (can_recurse && scatter) ? 0xFF : 0;
+	
 	traceRayEXT(scene, ray_flags, mask, 0, 2, 0, hit_pos, 0.001, scatter_dir, 100.0, 0);
-	vec3 color;
-	if (can_recurse && scatter) {
-		vec3 in_color = payload.color.rgb;
-		color = in_color * attenuation;
-	} else {
+	
+	vec3 accum = scatter ? (attenuation * payload.color.rgb) : vec3(0.0);
+	vec3 color = emitted + accum;
+	
+	if (!can_recurse) { // check if all was invalid due to recursion depth
 		color = vec3(0.0); // stop accumulating light
 	}
 

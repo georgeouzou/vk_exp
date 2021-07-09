@@ -31,7 +31,8 @@ struct PBRMaterial
 enum class MaterialType : int32_t
 {
 	LAMBERTIAN = 0,
-	METAL = 1
+	METAL = 1,
+	EMISSIVE = 2
 };
 
 static inline float luminance(glm::vec3 color) 

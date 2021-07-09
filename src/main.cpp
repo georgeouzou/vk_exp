@@ -461,8 +461,8 @@ static void mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
 {
 	MouseState ms;
 	ms.left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-	ms.right = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;;
-	ms.middle = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;;
+	ms.right = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+	ms.middle = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
 
 	if (!ms.left && !ms.right && !ms.middle) return;
 
@@ -1958,7 +1958,7 @@ void BaseApplication::create_spheres()
 	for (int a = -10; a < 10; ++a) {
 		for (int b = -10; b < 10; ++b) {
 			SpherePrimitive sphere = {};
-			float radius = 0.1f * rgen();
+			float radius = 0.1 * glm::clamp(rgen(), 0.2f, 1.0f);
 			glm::vec3 center = glm::vec3(scale*a + scale *rgen(), scale*b + scale*rgen(), +radius);
 			// compute aabb
 			glm::vec3 aabb_min = center - glm::vec3(radius);
@@ -1969,8 +1969,20 @@ void BaseApplication::create_spheres()
 			sphere.bbox.maxX = aabb_max.x;
 			sphere.bbox.maxY = aabb_max.y;
 			sphere.bbox.maxZ = aabb_max.z;
-			sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
-			sphere.material = materials::MaterialType(rgen() > 0.85f ? 1 : 0);
+			float material_rand = rgen();
+			if (material_rand > 0.90) {
+				sphere.material = materials::MaterialType::EMISSIVE;
+			} else if (material_rand > 0.4) {
+				sphere.material = materials::MaterialType::METAL;
+			} else {
+				sphere.material = materials::MaterialType::LAMBERTIAN;
+			}
+			if (sphere.material == materials::MaterialType::EMISSIVE) {
+				const float light_intensity = rgen() * 50;
+				sphere.albedo = glm::vec4(light_intensity*rgen(), light_intensity*rgen(), light_intensity*rgen(), 1.0f);
+			} else {
+				sphere.albedo = glm::vec4(rgen(), rgen(), rgen(), 1.0f);
+			}
 			sphere.fuzz = rgen();
 			m_sphere_primitives.push_back(sphere);
 		}
