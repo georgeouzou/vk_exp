@@ -24,7 +24,7 @@ struct PBRMaterial
 	glm::vec4 albedo;
 	float metallic{ 0.0f };
 	float roughness{ 0.0f };
-	float pad0;
+	float ior{ 1.0 };
 	float pad1;
 };
 

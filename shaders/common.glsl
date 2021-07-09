@@ -52,7 +52,7 @@ struct PBRMaterial
 	vec4 albedo;
 	float metallic;
 	float roughness;
-	float pad0;
+	float ior;
 	float pad1;
 };
 

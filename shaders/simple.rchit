@@ -77,7 +77,7 @@ void main()
 	bool scatter;
 	vec3 attenuation;
 	if (transparent) {
-		const float ior = 1.5;
+		const float ior = material.ior;
 		const float ratio = gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT ? (1.0 / ior) : ior;
 		const float cos_theta = min(dot(-gl_WorldRayDirectionEXT, hit_normal), 1.0);
 		const float sin_theta = sqrt(1.0 - cos_theta*cos_theta);

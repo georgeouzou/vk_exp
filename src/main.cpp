@@ -1907,6 +1907,7 @@ void BaseApplication::load_model()
 		
 		part_info.pbr_material = materials::convert_mtl_to_pbr(mtl);
 		part_info.pbr_material.albedo.a = tmat.dissolve;
+		part_info.pbr_material.ior = tmat.ior;
         m_model_parts.push_back(part_info);
         printf("Add part %s {v0 %u, vc %u, i0 %u, ic %u}\t material [albedo {%.2f, %.2f, %.2f, %.2f}, metallic %.2f, roughness %.2f\n",
 			part.name.c_str(),
