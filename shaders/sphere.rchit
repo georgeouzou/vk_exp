@@ -33,7 +33,6 @@ void main()
 	const vec3 aabb_max = vec3(sph.aabb_maxx, sph.aabb_maxy, sph.aabb_maxz);
 	const vec3 aabb_min = vec3(sph.aabb_minx, sph.aabb_miny, sph.aabb_minz);
 	const vec3 center = (aabb_max + aabb_min) / vec3(2.0);
-	const float radius = (aabb_max.x - aabb_min.x) / 2.0;
 
 	const vec3 hit_normal = normalize(sphere_point - center);
 	const vec3 hit_pos = sphere_point;
@@ -63,7 +62,7 @@ void main()
 	bool can_recurse = payload.depth < 16; // or 15 ???
 	uint mask = (can_recurse && scatter) ? 0xFF : 0;
 	
-	traceRayEXT(scene, ray_flags, mask, 0, 2, 0, hit_pos, 0.001, scatter_dir, 100.0, 0);
+	traceRayEXT(scene, ray_flags, mask, 0, 2, 0, hit_pos+0.001*hit_normal, 0.001, scatter_dir, 100.0, 0);
 	
 	vec3 accum = scatter ? (attenuation * payload.color.rgb) : vec3(0.0);
 	vec3 color = emitted + accum;
