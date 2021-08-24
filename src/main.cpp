@@ -37,7 +37,7 @@
 #include "materials.hpp"
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
-#define ENABLE_VALIDATION_LAYERS
+//#define ENABLE_VALIDATION_LAYERS
 
 struct ShaderGroupHandle
 {
@@ -527,30 +527,35 @@ VkPhysicalDeviceRayTracingPipelinePropertiesKHR get_raytracing_properties(VkPhys
 	return rt_props;
 }
 
-void image_barrier(VkCommandBuffer commandBuffer,
+void image_barrier(VkCommandBuffer cmd_buffer,
 	VkImage image,
-	VkImageSubresourceRange& subresourceRange,
-	VkAccessFlags srcAccessMask,
-	VkAccessFlags dstAccessMask,
-	VkImageLayout oldLayout,
-	VkImageLayout newLayout)
+	VkImageSubresourceRange& subresource_range,
+	VkPipelineStageFlags2KHR src_stage_mask,
+	VkAccessFlags2KHR src_access_mask,
+	VkImageLayout old_layout,
+	VkPipelineStageFlags2KHR dst_stage_mask,
+	VkAccessFlags2KHR dst_access_mask,
+	VkImageLayout new_layout)
 {
-	VkImageMemoryBarrier b = {};
-	b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	b.srcAccessMask = srcAccessMask;
-	b.dstAccessMask = dstAccessMask;
-	b.oldLayout = oldLayout;
-	b.newLayout = newLayout;
+	VkImageMemoryBarrier2KHR b = {};
+	b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR;
+	b.srcStageMask = src_stage_mask;
+	b.srcAccessMask = src_access_mask;
+	b.dstStageMask = dst_stage_mask;
+	b.dstAccessMask = dst_access_mask;
+	b.oldLayout = old_layout;
+	b.newLayout = new_layout;
 	b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	b.image = image;
-	b.subresourceRange = subresourceRange;
+	b.subresourceRange = subresource_range;
 
-	vkCmdPipelineBarrier(commandBuffer,
-		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-		0, 0, nullptr, 0, nullptr, 1,
-		&b);
+	VkDependencyInfoKHR dep = {};
+	dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR;
+	dep.imageMemoryBarrierCount = 1;
+	dep.pImageMemoryBarriers = &b;
+
+	vkCmdPipelineBarrier2KHR(cmd_buffer, &dep);
 }
 
 VkDeviceAddress get_buffer_address(VkDevice device, VkBuffer buffer)
@@ -600,6 +605,7 @@ BaseApplication::BaseApplication()
 #endif
 
 	m_device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
@@ -979,9 +985,12 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 	VkPhysicalDeviceVulkan12Features v12_features = {};
 	v12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	v12_features.pNext = &rtp_features;
+	VkPhysicalDeviceSynchronization2FeaturesKHR sh2 = {};
+	sh2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+	sh2.pNext = &v12_features;
 	VkPhysicalDeviceFeatures2 features;
 	features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-	features.pNext = &v12_features;
+	features.pNext = &sh2;
 	vkGetPhysicalDeviceFeatures2(gpu, &features);
 	
 	auto indices = find_queue_families(gpu);
@@ -1000,7 +1009,8 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		rtp_features.rayTracingPipeline &&
 		rq_features.rayQuery &&
 		as_features.accelerationStructure &&
-		v12_features.bufferDeviceAddress;
+		v12_features.bufferDeviceAddress &&
+		sh2.synchronization2;
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
@@ -1078,11 +1088,16 @@ void BaseApplication::create_logical_device()
 	v12f.bufferDeviceAddress = VK_TRUE;
 	v12f.pNext = &drtf;
 
+	VkPhysicalDeviceSynchronization2FeaturesKHR sh2 = {};
+	sh2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+	sh2.synchronization2 = VK_TRUE;
+	sh2.pNext = &v12f;
+
 	VkPhysicalDeviceFeatures2 df = {};
 	df.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 	df.features.samplerAnisotropy = VK_TRUE;
 	df.features.vertexPipelineStoresAndAtomics = VK_TRUE;
-	df.pNext = &v12f;
+	df.pNext = &sh2;
 
 	VkDeviceCreateInfo ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1307,7 +1322,8 @@ void BaseApplication::create_image_views()
 
 void BaseApplication::create_render_pass()
 {
-	VkAttachmentDescription color_attachment = {};
+	VkAttachmentDescription2 color_attachment = {};
+	color_attachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
 	color_attachment.format = m_swapchain_img_format;
 	color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
 	// clear the values to a constant at the start
@@ -1319,7 +1335,8 @@ void BaseApplication::create_render_pass()
 	color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-	VkAttachmentDescription depth_attachment = {};
+	VkAttachmentDescription2 depth_attachment = {};
+	depth_attachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
 	depth_attachment.format = find_supported_depth_format();
 	depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
 	depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -1329,34 +1346,51 @@ void BaseApplication::create_render_pass()
 	depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-	VkAttachmentReference color_attachment_ref = {};
+	VkAttachmentReference2 color_attachment_ref = {};
+	color_attachment_ref.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
 	color_attachment_ref.attachment = 0; // index to above descriptions
 	color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	color_attachment_ref.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 
-	VkAttachmentReference depth_attachment_ref = {};
+	VkAttachmentReference2 depth_attachment_ref = {};
+	depth_attachment_ref.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
 	depth_attachment_ref.attachment = 1;
 	depth_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	depth_attachment_ref.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 	
-	VkSubpassDescription subpass = {};
+	VkSubpassDescription2 subpass = {};
+	subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
 	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpass.colorAttachmentCount = 1;
 	// the index in this array is referenced in the frag shader
 	subpass.pColorAttachments = &color_attachment_ref;
 	subpass.pDepthStencilAttachment = &depth_attachment_ref;
 
-	VkSubpassDependency dependency = {};
+	VkMemoryBarrier2KHR mem_bar = {};
+	mem_bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2_KHR;
+	// srcStageMask needs to be a part of pWaitDstStageMask in the WSI semaphore.
+	mem_bar.srcStageMask = 
+		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR |
+		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT_KHR;
+	mem_bar.dstStageMask = 
+		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR |
+		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT_KHR;
+	mem_bar.srcAccessMask = 0;
+	mem_bar.dstAccessMask = 
+		VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR |
+		VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR;
+
+	VkSubpassDependency2 dependency = {};
+	dependency.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+	dependency.pNext = &mem_bar;
 	dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
 	dependency.dstSubpass = 0; // our subpass
-	dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependency.srcAccessMask = 0;
-	dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-	std::array<VkAttachmentDescription, 2> attachments = {
+	
+	std::array<VkAttachmentDescription2, 2> attachments = {
 		color_attachment, depth_attachment
 	};
-	VkRenderPassCreateInfo rpci = {};
-	rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	VkRenderPassCreateInfo2 rpci = {};
+	rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
 	rpci.attachmentCount = uint32_t(attachments.size());
 	rpci.pAttachments = attachments.data();
 	rpci.subpassCount = 1;
@@ -1364,7 +1398,7 @@ void BaseApplication::create_render_pass()
 	rpci.dependencyCount = 1;
 	rpci.pDependencies = &dependency;
 
-	auto res = vkCreateRenderPass(m_device, &rpci, nullptr, &m_render_pass);
+	auto res = vkCreateRenderPass2(m_device, &rpci, nullptr, &m_render_pass);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to create render pass");
 	}
@@ -1759,12 +1793,17 @@ void BaseApplication::end_single_time_commands(VkQueue queue, VkCommandPool cmd_
 	auto res = vkEndCommandBuffer(cmd_buffer);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to end command buffer recording");
 
-	VkSubmitInfo si = {};
-	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	si.commandBufferCount = 1;
-	si.pCommandBuffers = &cmd_buffer;
+	VkCommandBufferSubmitInfoKHR cmd_submit = {};
+	cmd_submit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR;
+	cmd_submit.commandBuffer = cmd_buffer;
+	cmd_submit.deviceMask = 0;
 
-	res = vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
+	VkSubmitInfo2KHR submit_info = {};
+	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR;
+	submit_info.commandBufferInfoCount = 1;
+	submit_info.pCommandBufferInfos = &cmd_submit;
+
+	res = vkQueueSubmit2KHR(queue, 1, &submit_info, VK_NULL_HANDLE);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to submit to queue");
 	res  = vkQueueWaitIdle(queue);
 	if (res == VK_ERROR_DEVICE_LOST) {
@@ -1774,6 +1813,7 @@ void BaseApplication::end_single_time_commands(VkQueue queue, VkCommandPool cmd_
 	vkFreeCommandBuffers(m_device, cmd_pool, 1, &cmd_buffer);
 }
 
+#if 0
 void BaseApplication::transition_image_layout(VkImage img, VkFormat format, VkImageLayout old_layout, VkImageLayout new_layout)
 {
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
@@ -1824,6 +1864,7 @@ void BaseApplication::transition_image_layout(VkImage img, VkFormat format, VkIm
 
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
+#endif
 
 void BaseApplication::copy_buffer_to_image(VkBuffer buffer, VkImage img, uint32_t width, uint32_t height)
 {
@@ -2588,31 +2629,6 @@ void BaseApplication::create_rt_image()
 				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img);
 
 	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
-
-	// we do the transition with a pipeline barrier as it is needed to be done only once
-	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
-
-	VkImageMemoryBarrier barrier = {};
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = m_rt_img.image;
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier.subresourceRange.baseMipLevel = 0;
-	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = 1;
-	VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-	VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
-	barrier.srcAccessMask = 0;
-	barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-
-	vkCmdPipelineBarrier(cmd_buf, src_stage, dst_stage,
-						 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
 void BaseApplication::create_descriptor_pool()
@@ -2874,12 +2890,6 @@ void BaseApplication::create_depth_resources()
 				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depth_img);
 
 	m_depth_img_view = vk_helpers::create_image_view_2d(m_device, m_depth_img.image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
-
-	// we could do the layout transition in the renderpass as the color attachment but here 
-	// we do it with a pipeline barrier as it is needed to be done only once
-	transition_image_layout(m_depth_img.image, depth_format,
-							VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
 }
 
 void BaseApplication::create_command_pools()
@@ -2921,7 +2931,7 @@ void BaseApplication::create_command_buffers()
 	for (size_t i = 0; i < m_cmd_buffers.size(); ++i) {
 		VkCommandBufferBeginInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+		bi.flags = 0;
 		bi.pInheritanceInfo = nullptr;
 		res = vkBeginCommandBuffer(m_cmd_buffers[i], &bi);
 		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
@@ -2980,16 +2990,16 @@ void BaseApplication::create_rt_command_buffers()
 	for (size_t i = 0; i < m_rt_cmd_buffers.size(); ++i) {
 		VkCommandBufferBeginInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+		bi.flags = 0;
 		bi.pInheritanceInfo = nullptr;
 		res = vkBeginCommandBuffer(m_rt_cmd_buffers[i], &bi);
 		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
 
 		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
-			0, VK_ACCESS_SHADER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-
+			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_GENERAL);
+	
 		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline);
 		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline_layout,
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
@@ -3026,27 +3036,13 @@ void BaseApplication::create_rt_command_buffers()
 			&raygen_region, &miss_region, &hitgroup_region, &callable_region,
 			m_width, m_height, 1);
 
-
-		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
-			0, VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
-			VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-
-#if 0
-		VkImageCopy cpy = {};
-		cpy.dstOffset = { 0, 0, 0 };
-		cpy.srcOffset = { 0, 0, 0 };
-		cpy.extent = { m_width, m_height, 1 };
-		cpy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-		cpy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-
-		vkCmdCopyImage(m_rt_cmd_buffers[i],
-			m_rt_img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
-#endif
+			VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_GENERAL,
+			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_READ_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		
+		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
+			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         VkImageBlit blit = {};
         blit.dstOffsets[0] = { 0, 0, 0 };
@@ -3060,9 +3056,9 @@ void BaseApplication::create_rt_command_buffers()
                 m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
 
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
-			VK_ACCESS_TRANSFER_WRITE_BIT, 0,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
+			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+	
 		res = vkEndCommandBuffer(m_rt_cmd_buffers[i]);
 		if (res != VK_SUCCESS) {
 			throw std::runtime_error("failed to end recording commands");
@@ -3145,30 +3141,41 @@ void BaseApplication::draw_frame()
 
 	update_uniform_buffer(img_idx);
 
-	VkSubmitInfo si = {};
-	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	VkSemaphore wait_semaphores[] = { m_sem_img_available[m_current_frame_idx] };
-	
-	si.waitSemaphoreCount = 1;
-	si.pWaitSemaphores = wait_semaphores;
-	si.commandBufferCount = 1;
-	VkPipelineStageFlags wait_stages[1];
+	VkSemaphoreSubmitInfoKHR wait_sem = {};
+	wait_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+	wait_sem.semaphore = m_sem_img_available[m_current_frame_idx];
 	if (m_raytraced) {
-		wait_stages[0] = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		si.pCommandBuffers = &m_rt_cmd_buffers[img_idx];
+		wait_sem.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
 	} else {
-		wait_stages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		si.pCommandBuffers = &m_cmd_buffers[img_idx];
+		wait_sem.stageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
 	}
-	si.pWaitDstStageMask = wait_stages;
-	VkSemaphore signal_semaphores[] = { m_sem_render_finished[m_current_frame_idx] };
-	si.signalSemaphoreCount = 1;
-	si.pSignalSemaphores = signal_semaphores;
+	wait_sem.deviceIndex = 0;
+
+	// Waits until everything is done
+	VkSemaphoreSubmitInfoKHR signal_sem = {};
+	signal_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+	signal_sem.semaphore = m_sem_render_finished[m_current_frame_idx];
+	signal_sem.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+	signal_sem.deviceIndex = 0;
+
+	VkCommandBufferSubmitInfoKHR cmd_submit = {};
+	cmd_submit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR;
+	cmd_submit.commandBuffer = m_raytraced ? m_rt_cmd_buffers[img_idx] : m_cmd_buffers[img_idx];
+	cmd_submit.deviceMask = 0;
+	
+	VkSubmitInfo2KHR submit_info = {};
+	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR;
+	submit_info.waitSemaphoreInfoCount = 1;
+	submit_info.pWaitSemaphoreInfos = &wait_sem;
+	submit_info.signalSemaphoreInfoCount = 1;
+	submit_info.pSignalSemaphoreInfos = &signal_sem;
+	submit_info.commandBufferInfoCount = 1;
+	submit_info.pCommandBufferInfos = &cmd_submit;
 
 	// we reset fences here because we need it after checking for swapchain recreation
 	// else we could apply it after vkWaitForFences
 	vkResetFences(m_device, 1, &m_fen_flight[m_current_frame_idx]);
-	res = vkQueueSubmit(m_graphics_queue, 1, &si, m_fen_flight[m_current_frame_idx]);
+	res = vkQueueSubmit2KHR(m_graphics_queue, 1, &submit_info, m_fen_flight[m_current_frame_idx]);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("failed to submit command buffers to queue");
 	}
@@ -3176,7 +3183,7 @@ void BaseApplication::draw_frame()
 	VkPresentInfoKHR pi = {};
 	pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	pi.waitSemaphoreCount = 1;
-	pi.pWaitSemaphores = signal_semaphores;
+	pi.pWaitSemaphores = &m_sem_render_finished[m_current_frame_idx];
 	VkSwapchainKHR swapchains[] = { m_swapchain };
 	pi.pSwapchains = swapchains;
 	pi.swapchainCount = 1;
