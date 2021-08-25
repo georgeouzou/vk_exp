@@ -370,7 +370,7 @@ private:
 	VkFormat m_swapchain_img_format;
 	VkExtent2D m_swapchain_extent;
 	std::vector<VkImageView> m_swapchain_img_views;
-	std::vector<VkFramebuffer> m_swapchain_fbs;
+	VkFramebuffer m_swapchain_fb{ VK_NULL_HANDLE };
 	
 	VmaImageAllocation m_depth_img;
 	VkImageView m_depth_img_view{ VK_NULL_HANDLE };
@@ -769,9 +769,9 @@ void BaseApplication::cleanup_swapchain()
 		}
 	}
 
-	for (auto fb : m_swapchain_fbs) {
-		vkDestroyFramebuffer(m_device, fb, nullptr);
-	}
+	
+	vkDestroyFramebuffer(m_device, m_swapchain_fb, nullptr);
+	
 	
 	vkDestroyPipeline(m_device, m_graphics_pipeline, nullptr);
 	vkDestroyDescriptorSetLayout(m_device, m_descriptor_set_layout, nullptr);
@@ -1010,6 +1010,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		rq_features.rayQuery &&
 		as_features.accelerationStructure &&
 		v12_features.bufferDeviceAddress &&
+		v12_features.imagelessFramebuffer &&
 		sh2.synchronization2;
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
@@ -1086,6 +1087,7 @@ void BaseApplication::create_logical_device()
 	VkPhysicalDeviceVulkan12Features v12f = {};
 	v12f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	v12f.bufferDeviceAddress = VK_TRUE;
+	v12f.imagelessFramebuffer = VK_TRUE;
 	v12f.pNext = &drtf;
 
 	VkPhysicalDeviceSynchronization2FeaturesKHR sh2 = {};
@@ -1659,25 +1661,46 @@ VkShaderModule BaseApplication::create_shader_module(const std::string &file_nam
 
 void BaseApplication::create_framebuffers()
 {
-	m_swapchain_fbs.resize(m_swapchain_img_views.size());
-	for (size_t i = 0; i < m_swapchain_img_views.size(); ++i) {
-		std::array<VkImageView, 2> attachments = {
-			m_swapchain_img_views[i],
-			m_depth_img_view
-		};
-		VkFramebufferCreateInfo fbci = {};
-		fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		fbci.renderPass = m_render_pass;
-		fbci.attachmentCount = uint32_t(attachments.size());
-		fbci.pAttachments = attachments.data();
-		fbci.width = m_swapchain_extent.width;
-		fbci.height = m_swapchain_extent.height;
-		fbci.layers = 1;
+	VkFramebufferAttachmentImageInfo ii_color = {};
+	ii_color.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO;
+	ii_color.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	ii_color.width = m_swapchain_extent.width;
+	ii_color.height = m_swapchain_extent.height;
+	ii_color.layerCount = 1;
+	ii_color.viewFormatCount = 1;
+	ii_color.pViewFormats = &m_swapchain_img_format;
 
-		auto res = vkCreateFramebuffer(m_device, &fbci, nullptr, &m_swapchain_fbs[i]);
-		if (res != VK_SUCCESS) {
-			throw std::runtime_error("failed to create framebuffer");
-		}
+	VkFramebufferAttachmentImageInfo ii_depth = {};
+	ii_depth.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO;
+	ii_depth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	ii_depth.width = m_swapchain_extent.width;
+	ii_depth.height = m_swapchain_extent.height;
+	ii_depth.layerCount = 1;
+	ii_depth.viewFormatCount = 1;
+	VkFormat depth_format = find_supported_depth_format();
+	ii_depth.pViewFormats = &depth_format;
+
+	std::array<VkFramebufferAttachmentImageInfo, 2> image_infos = { ii_color, ii_depth };
+
+	VkFramebufferAttachmentsCreateInfo fbaci = {};
+	fbaci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO;
+	fbaci.attachmentImageInfoCount = 2;
+	fbaci.pAttachmentImageInfos = image_infos.data();
+
+	VkFramebufferCreateInfo fbci = {};
+	fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+	fbci.pNext = &fbaci;
+	fbci.flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT;
+	fbci.renderPass = m_render_pass;
+	fbci.attachmentCount = 2;
+	fbci.pAttachments = nullptr;
+	fbci.width = m_swapchain_extent.width;
+	fbci.height = m_swapchain_extent.height;
+	fbci.layers = 1;
+
+	auto res = vkCreateFramebuffer(m_device, &fbci, nullptr, &m_swapchain_fb);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to create framebuffer");
 	}
 }
 
@@ -2914,8 +2937,8 @@ void BaseApplication::create_command_pools()
 
 void BaseApplication::create_command_buffers()
 {
-	// the command buffers are the same number as the fbs;
-	m_cmd_buffers.resize(m_swapchain_fbs.size());
+	// the command buffers are the same number as the swapchain images
+	m_cmd_buffers.resize(m_swapchain_images.size());
 
 	VkCommandBufferAllocateInfo cbi = {};
 	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -2936,10 +2959,17 @@ void BaseApplication::create_command_buffers()
 		res = vkBeginCommandBuffer(m_cmd_buffers[i], &bi);
 		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
 		
+		std::array<VkImageView, 2> attachments = { m_swapchain_img_views[i], m_depth_img_view };
+		VkRenderPassAttachmentBeginInfo attachments_info = {};
+		attachments_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO;
+		attachments_info.attachmentCount = (uint32_t)attachments.size();
+		attachments_info.pAttachments = attachments.data();
+
 		VkRenderPassBeginInfo rpbi = {};
 		rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		rpbi.pNext = &attachments_info;
 		rpbi.renderPass = m_render_pass;
-		rpbi.framebuffer = m_swapchain_fbs[i];
+		rpbi.framebuffer = m_swapchain_fb;
 		rpbi.renderArea.offset = { 0, 0 };
 		rpbi.renderArea.extent = m_swapchain_extent;
 		std::array<VkClearValue, 2> clear_values = {};
@@ -2948,7 +2978,11 @@ void BaseApplication::create_command_buffers()
 		rpbi.clearValueCount = uint32_t(clear_values.size());
 		rpbi.pClearValues = clear_values.data();
 
-		vkCmdBeginRenderPass(m_cmd_buffers[i], &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+		VkSubpassBeginInfo spbi = {};
+		spbi.sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO;
+		spbi.contents = VK_SUBPASS_CONTENTS_INLINE;
+
+		vkCmdBeginRenderPass2(m_cmd_buffers[i], &rpbi, &spbi);
 	
 		vkCmdBindPipeline(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 		
@@ -2962,7 +2996,9 @@ void BaseApplication::create_command_buffers()
             vkCmdDrawIndexed(m_cmd_buffers[i], p.index_count, 1, p.index_offset, p.vertex_offset, 0);
         }
 
-		vkCmdEndRenderPass(m_cmd_buffers[i]);
+		VkSubpassEndInfo spei = {};
+		spei.sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO;
+		vkCmdEndRenderPass2(m_cmd_buffers[i], &spei);
 
 		res = vkEndCommandBuffer(m_cmd_buffers[i]);
 		if (res != VK_SUCCESS) {
@@ -2973,8 +3009,8 @@ void BaseApplication::create_command_buffers()
 
 void BaseApplication::create_rt_command_buffers()
 {
-	// the command buffers are the same number as the fbs;
-	m_rt_cmd_buffers.resize(m_swapchain_fbs.size());
+	// the command buffers are the same number as the swapchain images
+	m_rt_cmd_buffers.resize(m_swapchain_images.size());
 
 	VkCommandBufferAllocateInfo cbi = {};
 	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
