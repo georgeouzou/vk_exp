@@ -1555,13 +1555,18 @@ void BaseApplication::create_graphics_pipeline()
 	dci.pDynamicStates = dynamic_states;
 #endif
 
+	VkPushConstantRange pc_range = {};
+	pc_range.offset = 0;
+	pc_range.size = sizeof(materials::PBRMaterial);
+	pc_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
 	// 10. Pipeline Layout
 	VkPipelineLayoutCreateInfo plci = {};
 	plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	plci.setLayoutCount = 1;
 	plci.pSetLayouts = &m_descriptor_set_layout;
-	plci.pushConstantRangeCount = 0;
-	plci.pPushConstantRanges = nullptr;
+	plci.pushConstantRangeCount = 1;
+	plci.pPushConstantRanges = &pc_range;
 
 	auto res = vkCreatePipelineLayout(m_device, &plci, nullptr, &m_pipeline_layout);
 	if (res != VK_SUCCESS) {
@@ -2993,6 +2998,8 @@ void BaseApplication::create_command_buffers()
 		vkCmdBindDescriptorSets(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout,
 								0, 1, &m_desc_sets[i], 0, nullptr);
         for (auto p : m_model_parts) {
+			vkCmdPushConstants(m_cmd_buffers[i], m_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, sizeof(materials::PBRMaterial), &p.pbr_material);
             vkCmdDrawIndexed(m_cmd_buffers[i], p.index_count, 1, p.index_offset, p.vertex_offset, 0);
         }
 

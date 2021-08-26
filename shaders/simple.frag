@@ -5,6 +5,11 @@
 
 #include "common.glsl"
 
+layout(push_constant) uniform PushConstantsBlock
+{
+	PBRMaterial material;
+} pc;
+
 layout(set = 0, binding = 0, std140) uniform SceneUniformsBlock 
 {
 	SceneUniforms ubo;
@@ -29,7 +34,7 @@ void main()
 	const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
 	const vec3 to_light = normalize(ubo.light_pos.xyz-hit_pos.xyz);
 
-	vec4 color = vec4(0.7, 0.7, 0.7, 1.0);
+	vec4 color = pc.material.albedo;
 
     rayQueryEXT ray_query;
     rayQueryInitializeEXT(ray_query, scene, 
@@ -40,7 +45,11 @@ void main()
     while (rayQueryProceedEXT(ray_query)) {}
 
     bool in_shadow = rayQueryGetIntersectionTypeEXT(ray_query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
-    const float ambient = 0.1;
+    //bool in_shadow = false;
+	const float ambient = 0.1;
 	const float lighting = (in_shadow) ? ambient : max(ambient, dot(hit_normal, to_light));
-	out_color = lighting * color; 
+	color = lighting * color; 
+
+	// gamma correct, for gamma = 2.0
+	out_color = sqrt(color);
 }
