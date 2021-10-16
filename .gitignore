@@ -4,6 +4,7 @@ build*/
 .clangd/
 .vs/
 out/
+.cache/
 
 # downloaded models
 models/
