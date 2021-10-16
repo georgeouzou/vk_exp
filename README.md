@@ -7,7 +7,7 @@ Based on
 - the vulkan spec
 - material shading of [_Ray Tracing in One Weekend_](https://raytracing.github.io/books/RayTracingInOneWeekend.html)
 
-To run you need to have a gpu that supports the latest vulkan KHR raytracing
+To run you need to have a gpu that supports vulkan KHR raytracing
 
 ## How to init and build
 
