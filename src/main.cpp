@@ -976,7 +976,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 	dr_features.pNext = nullptr;
 	VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features = {};
 	as_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
-	dr_features.pNext = &dr_features;
+	as_features.pNext = &dr_features;
 	VkPhysicalDeviceRayQueryFeaturesKHR rq_features = {};
 	rq_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
 	rq_features.pNext = &as_features;
@@ -994,6 +994,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 	features.pNext = &sh2;
 	vkGetPhysicalDeviceFeatures2(gpu, &features);
 	
+
 	auto indices = find_queue_families(gpu);
 
 	bool extensions_supported = check_device_extension_support(gpu);
@@ -1011,8 +1012,8 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		rq_features.rayQuery &&
 		as_features.accelerationStructure &&
 		v12_features.bufferDeviceAddress &&
-		sh2.synchronization2;
-		//dr_features.dynamicRendering; TODO: beta driver bug??
+		sh2.synchronization2 &&
+		dr_features.dynamicRendering;
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
