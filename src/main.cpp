@@ -39,6 +39,9 @@
 const int MAX_FRAMES_IN_FLIGHT = 3;
 //#define ENABLE_VALIDATION_LAYERS
 
+static PFN_vkCmdBeginRenderingKHR vkCmdBeginRenderingKHR = 0;
+static PFN_vkCmdEndRenderingKHR vkCmdEndRenderingKHR = 0;
+
 struct ShaderGroupHandle
 {
 	uint64_t i0;
@@ -275,13 +278,10 @@ private:
 	void create_swapchain();
 	void create_image_views();
 
-	void create_render_pass();
 	void create_descriptor_set_layout();
 	void create_graphics_pipeline();
 
 	VkShaderModule create_shader_module(const std::string& file_name, shaderc_shader_kind shader_kind, const std::vector<char>& code) const;
-
-	void create_framebuffers();
 
 	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
 	
@@ -321,7 +321,6 @@ private:
 	void create_shader_binding_table();
 
 	VkFormat find_supported_format(const std::vector<VkFormat> &candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const;
-	VkFormat find_supported_depth_format() const;
 	void create_depth_resources();
 
 	void create_command_pools();
@@ -370,12 +369,11 @@ private:
 	VkFormat m_swapchain_img_format;
 	VkExtent2D m_swapchain_extent;
 	std::vector<VkImageView> m_swapchain_img_views;
-	VkFramebuffer m_swapchain_fb{ VK_NULL_HANDLE };
 	
 	VmaImageAllocation m_depth_img;
 	VkImageView m_depth_img_view{ VK_NULL_HANDLE };
+	VkFormat m_depth_img_format{ VK_FORMAT_UNDEFINED };
 
-	VkRenderPass m_render_pass{ VK_NULL_HANDLE };
 	VkDescriptorSetLayout m_descriptor_set_layout{ VK_NULL_HANDLE };
 	VkPipelineLayout m_pipeline_layout{ VK_NULL_HANDLE };
 	VkPipeline m_graphics_pipeline{ VK_NULL_HANDLE };
@@ -611,6 +609,7 @@ BaseApplication::BaseApplication()
 	m_device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
 }
 
 BaseApplication::~BaseApplication()
@@ -666,6 +665,12 @@ void BaseApplication::init_vulkan()
 	pick_gpu();
 	create_logical_device();
 
+	// load functions for dynamic rendering (not yet supported by volk)
+	{ 
+		vkCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(m_device, "vkCmdBeginRenderingKHR");
+		vkCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(m_device, "vkCmdEndRenderingKHR");
+	}
+
 	create_allocator();
 
 	create_command_pools();
@@ -676,10 +681,8 @@ void BaseApplication::init_vulkan()
 	create_depth_resources();
 	create_rt_image();
 
-	create_render_pass();
 	create_descriptor_set_layout();
 	create_graphics_pipeline();
-	create_framebuffers();
 
 	// rt
 	create_raytracing_pipeline_layout();
@@ -724,10 +727,8 @@ void BaseApplication::recreate_swapchain()
 	create_depth_resources();
 	create_rt_image();
 
-	create_render_pass();
 	create_descriptor_set_layout();
 	create_graphics_pipeline();
-	create_framebuffers();
 	create_uniform_buffers();
 
 	create_descriptor_pool();
@@ -768,16 +769,12 @@ void BaseApplication::cleanup_swapchain()
 				static_cast<uint32_t>(m_cmd_buffers.size()), m_cmd_buffers.data());
 		}
 	}
-
-	
-	vkDestroyFramebuffer(m_device, m_swapchain_fb, nullptr);
 	
 	
 	vkDestroyPipeline(m_device, m_graphics_pipeline, nullptr);
 	vkDestroyDescriptorSetLayout(m_device, m_descriptor_set_layout, nullptr);
 	vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
-	vkDestroyRenderPass(m_device, m_render_pass, nullptr);
-	
+
 	vkDestroyImageView(m_device, m_depth_img_view, nullptr);
 	vmaDestroyImage(m_allocator, m_depth_img.image, m_depth_img.alloc);
 	
@@ -974,8 +971,12 @@ bool BaseApplication::check_device_extension_support(VkPhysicalDevice gpu) const
 
 bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 {
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR dr_features = {};
+	dr_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+	dr_features.pNext = nullptr;
 	VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features = {};
 	as_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+	dr_features.pNext = &dr_features;
 	VkPhysicalDeviceRayQueryFeaturesKHR rq_features = {};
 	rq_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
 	rq_features.pNext = &as_features;
@@ -1010,8 +1011,8 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		rq_features.rayQuery &&
 		as_features.accelerationStructure &&
 		v12_features.bufferDeviceAddress &&
-		v12_features.imagelessFramebuffer &&
 		sh2.synchronization2;
+		//dr_features.dynamicRendering; TODO: beta driver bug??
 	
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
@@ -1070,9 +1071,15 @@ void BaseApplication::create_logical_device()
 		qcis.push_back(qci);
 	}
 
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR dr_features = {};
+	dr_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+	dr_features.dynamicRendering = true;
+	dr_features.pNext = nullptr;
+
 	VkPhysicalDeviceAccelerationStructureFeaturesKHR dasf = {};
 	dasf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
 	dasf.accelerationStructure = VK_TRUE;
+	dasf.pNext = &dr_features;
 
 	VkPhysicalDeviceRayQueryFeaturesKHR drqf = {};
 	drqf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
@@ -1087,7 +1094,6 @@ void BaseApplication::create_logical_device()
 	VkPhysicalDeviceVulkan12Features v12f = {};
 	v12f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	v12f.bufferDeviceAddress = VK_TRUE;
-	v12f.imagelessFramebuffer = VK_TRUE;
 	v12f.pNext = &drtf;
 
 	VkPhysicalDeviceSynchronization2FeaturesKHR sh2 = {};
@@ -1322,90 +1328,6 @@ void BaseApplication::create_image_views()
 	}
 }
 
-void BaseApplication::create_render_pass()
-{
-	VkAttachmentDescription2 color_attachment = {};
-	color_attachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
-	color_attachment.format = m_swapchain_img_format;
-	color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-	// clear the values to a constant at the start
-	color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; 
-	// rendered contents will be stored in memory and can be read later
-	color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-	VkAttachmentDescription2 depth_attachment = {};
-	depth_attachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
-	depth_attachment.format = find_supported_depth_format();
-	depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-	depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-	VkAttachmentReference2 color_attachment_ref = {};
-	color_attachment_ref.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
-	color_attachment_ref.attachment = 0; // index to above descriptions
-	color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	color_attachment_ref.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-
-	VkAttachmentReference2 depth_attachment_ref = {};
-	depth_attachment_ref.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
-	depth_attachment_ref.attachment = 1;
-	depth_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	depth_attachment_ref.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-	
-	VkSubpassDescription2 subpass = {};
-	subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
-	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subpass.colorAttachmentCount = 1;
-	// the index in this array is referenced in the frag shader
-	subpass.pColorAttachments = &color_attachment_ref;
-	subpass.pDepthStencilAttachment = &depth_attachment_ref;
-
-	VkMemoryBarrier2KHR mem_bar = {};
-	mem_bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2_KHR;
-	// srcStageMask needs to be a part of pWaitDstStageMask in the WSI semaphore.
-	mem_bar.srcStageMask = 
-		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR |
-		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT_KHR;
-	mem_bar.dstStageMask = 
-		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR |
-		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT_KHR;
-	mem_bar.srcAccessMask = 0;
-	mem_bar.dstAccessMask = 
-		VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR |
-		VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR;
-
-	VkSubpassDependency2 dependency = {};
-	dependency.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
-	dependency.pNext = &mem_bar;
-	dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-	dependency.dstSubpass = 0; // our subpass
-	
-	std::array<VkAttachmentDescription2, 2> attachments = {
-		color_attachment, depth_attachment
-	};
-	VkRenderPassCreateInfo2 rpci = {};
-	rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
-	rpci.attachmentCount = uint32_t(attachments.size());
-	rpci.pAttachments = attachments.data();
-	rpci.subpassCount = 1;
-	rpci.pSubpasses = &subpass;
-	rpci.dependencyCount = 1;
-	rpci.pDependencies = &dependency;
-
-	auto res = vkCreateRenderPass2(m_device, &rpci, nullptr, &m_render_pass);
-	if (res != VK_SUCCESS) {
-		throw std::runtime_error("failed to create render pass");
-	}
-}
-
 void BaseApplication::create_descriptor_set_layout()
 {
 	VkDescriptorSetLayoutBinding lb = {};
@@ -1573,9 +1495,17 @@ void BaseApplication::create_graphics_pipeline()
 		throw std::runtime_error("failed to create pipeline layout");
 	}
 
-	VkGraphicsPipelineCreateInfo pci = {};
+	VkPipelineRenderingCreateInfoKHR drci = {};
+	drci.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+	drci.colorAttachmentCount = 1;
+	drci.pColorAttachmentFormats = &m_swapchain_img_format;
+	drci.depthAttachmentFormat = m_depth_img_format;
+	drci.stencilAttachmentFormat = m_depth_img_format;
+
+	VkGraphicsPipelineCreateInfo pci = {};	
 	pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pci.stageCount = 2;
+	pci.pNext = &drci;
 	pci.pStages = shader_stages;
 	pci.pVertexInputState = &vici;
 	pci.pInputAssemblyState = &iaci;
@@ -1586,7 +1516,7 @@ void BaseApplication::create_graphics_pipeline()
 	pci.pColorBlendState = &cbci;
 	pci.pDynamicState = nullptr;
 	pci.layout = m_pipeline_layout;
-	pci.renderPass = m_render_pass;
+	pci.renderPass = VK_NULL_HANDLE;
 	pci.subpass = 0;
 	pci.basePipelineHandle = VK_NULL_HANDLE; // optional
 	pci.basePipelineIndex = -1; // optional
@@ -1662,51 +1592,6 @@ VkShaderModule BaseApplication::create_shader_module(const std::string &file_nam
 		throw std::runtime_error("failed to create shader module");
 	}
 	return shader_module;
-}
-
-void BaseApplication::create_framebuffers()
-{
-	VkFramebufferAttachmentImageInfo ii_color = {};
-	ii_color.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO;
-	ii_color.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	ii_color.width = m_swapchain_extent.width;
-	ii_color.height = m_swapchain_extent.height;
-	ii_color.layerCount = 1;
-	ii_color.viewFormatCount = 1;
-	ii_color.pViewFormats = &m_swapchain_img_format;
-
-	VkFramebufferAttachmentImageInfo ii_depth = {};
-	ii_depth.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO;
-	ii_depth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-	ii_depth.width = m_swapchain_extent.width;
-	ii_depth.height = m_swapchain_extent.height;
-	ii_depth.layerCount = 1;
-	ii_depth.viewFormatCount = 1;
-	VkFormat depth_format = find_supported_depth_format();
-	ii_depth.pViewFormats = &depth_format;
-
-	std::array<VkFramebufferAttachmentImageInfo, 2> image_infos = { ii_color, ii_depth };
-
-	VkFramebufferAttachmentsCreateInfo fbaci = {};
-	fbaci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO;
-	fbaci.attachmentImageInfoCount = 2;
-	fbaci.pAttachmentImageInfos = image_infos.data();
-
-	VkFramebufferCreateInfo fbci = {};
-	fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-	fbci.pNext = &fbaci;
-	fbci.flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT;
-	fbci.renderPass = m_render_pass;
-	fbci.attachmentCount = 2;
-	fbci.pAttachments = nullptr;
-	fbci.width = m_swapchain_extent.width;
-	fbci.height = m_swapchain_extent.height;
-	fbci.layers = 1;
-
-	auto res = vkCreateFramebuffer(m_device, &fbci, nullptr, &m_swapchain_fb);
-	if (res != VK_SUCCESS) {
-		throw std::runtime_error("failed to create framebuffer");
-	}
 }
 
 uint32_t BaseApplication::find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const
@@ -2900,24 +2785,21 @@ VkFormat BaseApplication::find_supported_format(const std::vector<VkFormat>& can
 	throw std::runtime_error("failed to find supported format");
 }
 
-VkFormat BaseApplication::find_supported_depth_format() const
+void BaseApplication::create_depth_resources()
 {
+	
 	std::vector<VkFormat> candidates = {
 		VK_FORMAT_D32_SFLOAT,
 		VK_FORMAT_D32_SFLOAT_S8_UINT,
 		VK_FORMAT_D24_UNORM_S8_UINT
 	};
-	return find_supported_format(candidates, VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-}
-
-void BaseApplication::create_depth_resources()
-{
-	VkFormat depth_format = find_supported_depth_format();
+	VkFormat depth_format = find_supported_format(candidates, VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
 	create_image(m_swapchain_extent.width, m_swapchain_extent.height, depth_format,
 				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depth_img);
 
 	m_depth_img_view = vk_helpers::create_image_view_2d(m_device, m_depth_img.image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+	m_depth_img_format = depth_format;
 }
 
 void BaseApplication::create_command_pools()
@@ -2963,31 +2845,53 @@ void BaseApplication::create_command_buffers()
 		bi.pInheritanceInfo = nullptr;
 		res = vkBeginCommandBuffer(m_cmd_buffers[i], &bi);
 		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
+
+		VkRenderingAttachmentInfoKHR color_attachment_info = {};
+		color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		color_attachment_info.imageView = m_swapchain_img_views[i];
+		color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR;
+		color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		color_attachment_info.clearValue.color = { 0.0f, 0.0f, 0.0f, 1.0f };
+		VkRenderingAttachmentInfoKHR depth_attachment_info = {};
+		depth_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		depth_attachment_info.imageView = m_depth_img_view;
+		depth_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR;
+		depth_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depth_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth_attachment_info.clearValue.depthStencil = { 1.0f, 0 };
 		
-		std::array<VkImageView, 2> attachments = { m_swapchain_img_views[i], m_depth_img_view };
-		VkRenderPassAttachmentBeginInfo attachments_info = {};
-		attachments_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO;
-		attachments_info.attachmentCount = (uint32_t)attachments.size();
-		attachments_info.pAttachments = attachments.data();
+		VkRenderingInfoKHR rp_info = {};
+		rp_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+		rp_info.flags = 0;
+		rp_info.renderArea.offset = { 0, 0 };
+		rp_info.renderArea.extent = m_swapchain_extent;
+		rp_info.layerCount = 1;
+		rp_info.colorAttachmentCount = 1;
+		rp_info.pColorAttachments = &color_attachment_info;
+		rp_info.pDepthAttachment = &depth_attachment_info;
+		rp_info.pStencilAttachment = nullptr;
 
-		VkRenderPassBeginInfo rpbi = {};
-		rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-		rpbi.pNext = &attachments_info;
-		rpbi.renderPass = m_render_pass;
-		rpbi.framebuffer = m_swapchain_fb;
-		rpbi.renderArea.offset = { 0, 0 };
-		rpbi.renderArea.extent = m_swapchain_extent;
-		std::array<VkClearValue, 2> clear_values = {};
-		clear_values[0].color = { 0.0f, 0.0f, 0.0f, 1.0f };
-		clear_values[1].depthStencil = { 1.0f, 0 };
-		rpbi.clearValueCount = uint32_t(clear_values.size());
-		rpbi.pClearValues = clear_values.data();
+		VkImageSubresourceRange isr_color = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		VkImageSubresourceRange isr_depth = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+		
+		vk_helpers::image_barrier(m_cmd_buffers[i], m_swapchain_images[i], isr_color,
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, // semaphore waits to get image for write in this stage, the layout change must happen after this
+			VK_ACCESS_2_NONE_KHR,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR,
+			VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR,
+			VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR);
 
-		VkSubpassBeginInfo spbi = {};
-		spbi.sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO;
-		spbi.contents = VK_SUBPASS_CONTENTS_INLINE;
+		vk_helpers::image_barrier(m_cmd_buffers[i], m_depth_img.image, isr_depth,
+			VK_PIPELINE_STAGE_2_NONE_KHR,
+			VK_ACCESS_2_NONE_KHR,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT_KHR,
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-		vkCmdBeginRenderPass2(m_cmd_buffers[i], &rpbi, &spbi);
+		vkCmdBeginRenderingKHR(m_cmd_buffers[i], &rp_info);
 	
 		vkCmdBindPipeline(m_cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 		
@@ -3003,9 +2907,16 @@ void BaseApplication::create_command_buffers()
             vkCmdDrawIndexed(m_cmd_buffers[i], p.index_count, 1, p.index_offset, p.vertex_offset, 0);
         }
 
-		VkSubpassEndInfo spei = {};
-		spei.sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO;
-		vkCmdEndRenderPass2(m_cmd_buffers[i], &spei);
+
+		vkCmdEndRenderingKHR(m_cmd_buffers[i]);
+
+		vk_helpers::image_barrier(m_cmd_buffers[i], m_swapchain_images[i], isr_color,
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR,
+			VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR,
+			VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
+			VK_PIPELINE_STAGE_2_NONE_KHR,
+			VK_ACCESS_2_NONE_KHR,
+			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 		res = vkEndCommandBuffer(m_cmd_buffers[i]);
 		if (res != VK_SUCCESS) {
@@ -3039,6 +2950,7 @@ void BaseApplication::create_rt_command_buffers()
 		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
 
 		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
 			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_GENERAL);
@@ -3084,7 +2996,7 @@ void BaseApplication::create_rt_command_buffers()
 			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_READ_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 		
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
-			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         VkImageBlit blit = {};
@@ -3187,14 +3099,15 @@ void BaseApplication::draw_frame()
 	VkSemaphoreSubmitInfoKHR wait_sem = {};
 	wait_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
 	wait_sem.semaphore = m_sem_img_available[m_current_frame_idx];
-	if (m_raytraced) {
-		wait_sem.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
+	if (!m_raytraced) {
+		wait_sem.stageMask =
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
 	} else {
-		wait_sem.stageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+		wait_sem.stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT_KHR;
 	}
 	wait_sem.deviceIndex = 0;
 
-	// Waits until everything is done
+	// signals when everything is done
 	VkSemaphoreSubmitInfoKHR signal_sem = {};
 	signal_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
 	signal_sem.semaphore = m_sem_render_finished[m_current_frame_idx];

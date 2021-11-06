@@ -1,13 +1,16 @@
 # vk_exp
 
-Experimenting with vulkan basics and ray tracing features
+- Experimenting with vulkan basics 
+- Experimenting with ray tracing features
+- Experimenting with the new VK_KHR_dynamic_rendering 
 
 Based on
 - https://vulkan-tutorial.com/ 
 - the vulkan spec
 - material shading of [_Ray Tracing in One Weekend_](https://raytracing.github.io/books/RayTracingInOneWeekend.html)
 
-To run you need to have a gpu that supports vulkan KHR raytracing
+To run you need to have a gpu & driver that supports vulkan KHR raytracing,
+also a gpu & driver that supports VK_KHR_dynamic_rendering
 
 ## How to init and build
 

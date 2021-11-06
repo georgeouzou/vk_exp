@@ -59,13 +59,11 @@ add_subdirectory(${VOLK_DIR})
 target_include_directories(${app} PRIVATE ${VOLK_DIR})
 target_link_libraries(${app} volk)
 
-# vulkan
-find_package(Vulkan)
-if (NOT Vulkan_FOUND)
-	message(FATAL_ERROR "Could not find vulkan library!")
-endif()
+# vulkan headers
+set(VULKAN_HEADERS_DIR "${EXTERN_DIR}/Vulkan-Headers")
+target_include_directories(${app} PRIVATE "${VULKAN_HEADERS_DIR}/include")
 
-target_include_directories(${app} PRIVATE ${Vulkan_INCLUDE_DIRS})
+# vulkan sdk for shaderc
 if (WIN32)
 	target_link_libraries(${app} $ENV{VULKAN_SDK}/Lib/shaderc_shared.lib)
 else()
