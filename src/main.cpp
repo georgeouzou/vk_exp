@@ -19,9 +19,7 @@
 #include <volk.h>
 #include <shaderc/shaderc.hpp>
 
-#define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
-#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -38,9 +36,6 @@
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 //#define ENABLE_VALIDATION_LAYERS
-
-static PFN_vkCmdBeginRenderingKHR vkCmdBeginRenderingKHR = 0;
-static PFN_vkCmdEndRenderingKHR vkCmdEndRenderingKHR = 0;
 
 struct ShaderGroupHandle
 {
@@ -664,12 +659,6 @@ void BaseApplication::init_vulkan()
 
 	pick_gpu();
 	create_logical_device();
-
-	// load functions for dynamic rendering (not yet supported by volk)
-	{ 
-		vkCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(m_device, "vkCmdBeginRenderingKHR");
-		vkCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(m_device, "vkCmdEndRenderingKHR");
-	}
 
 	create_allocator();
 
