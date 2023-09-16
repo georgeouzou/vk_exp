@@ -18,6 +18,7 @@
 
 #include <volk.h>
 #include <shaderc/shaderc.hpp>
+#include <vma/vk_mem_alloc.h>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
 #include <glm/glm.hpp>
@@ -28,7 +29,6 @@
 #include <GLFW/glfw3.h>
 #include <tiny_obj_loader.h>
 
-#include "vma.h"
 #include "stb_image.h"
 #include "orbit_camera.h"
 #include "shader_dir.h"

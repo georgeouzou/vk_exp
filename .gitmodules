@@ -13,3 +13,6 @@
 [submodule "extern/Vulkan-Headers"]
 	path = extern/Vulkan-Headers
 	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "extern/vma"]
+	path = extern/vma
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
