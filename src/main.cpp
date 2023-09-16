@@ -281,7 +281,7 @@ private:
 	uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props) const;
 	
 	void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
-					   VkMemoryPropertyFlags props, VmaBufferAllocation &buffer);
+					   VkMemoryPropertyFlags props, VmaBufferAllocation &buffer, VkDeviceSize alignment = 0);
 	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 	
 	void create_image(uint32_t width, uint32_t height, VkFormat format,
@@ -520,6 +520,18 @@ VkPhysicalDeviceRayTracingPipelinePropertiesKHR get_raytracing_properties(VkPhys
 	return rt_props;
 }
 
+VkPhysicalDeviceAccelerationStructurePropertiesKHR get_acceleration_structure_properties(VkPhysicalDevice gpu)
+{
+	VkPhysicalDeviceProperties2 props = {};
+	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR rt_props = {};
+	rt_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+	props.pNext = &rt_props;
+	vkGetPhysicalDeviceProperties2(gpu, &props);
+	return rt_props;
+}
+
+
 void image_barrier(VkCommandBuffer cmd_buffer,
 	VkImage image,
 	VkImageSubresourceRange& subresource_range,
@@ -566,6 +578,19 @@ VkDeviceAddress get_acceleration_structure_address(VkDevice device, VkAccelerati
 	dai.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
 	dai.accelerationStructure = structure;
 	return vkGetAccelerationStructureDeviceAddressKHR(device, &dai);
+}
+
+static std::string human_readable_size(VkDeviceSize sz)
+{
+	char out[64];
+	if (sz > VkDeviceSize(1024 * 1024)) {
+		snprintf(out, sizeof(out), "%" PRIu64 " MB", sz / 1024 / 1024);
+	} else if (sz > 1024) {
+		snprintf(out, sizeof(out), "%" PRIu64 " KB", sz / 1024);
+	} else {
+		snprintf(out, sizeof(out), "%" PRIu64 " Bytes", sz);
+	}
+	return std::string(out);
 }
 
 };
@@ -983,7 +1008,6 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 	features.pNext = &sh2;
 	vkGetPhysicalDeviceFeatures2(gpu, &features);
 	
-
 	auto indices = find_queue_families(gpu);
 
 	bool extensions_supported = check_device_extension_support(gpu);
@@ -1490,7 +1514,7 @@ void BaseApplication::create_graphics_pipeline()
 	drci.colorAttachmentCount = 1;
 	drci.pColorAttachmentFormats = &m_swapchain_img_format;
 	drci.depthAttachmentFormat = m_depth_img_format;
-	drci.stencilAttachmentFormat = m_depth_img_format;
+	drci.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
 	VkGraphicsPipelineCreateInfo pci = {};	
 	pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1601,7 +1625,7 @@ uint32_t BaseApplication::find_memory_type(uint32_t type_filter, VkMemoryPropert
 
 void BaseApplication::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
 									VkMemoryPropertyFlags props, 
-									VmaBufferAllocation &buffer)
+									VmaBufferAllocation &buffer, VkDeviceSize alignment)
 {
 	auto indices = find_queue_families(m_gpu);
 	uint32_t qidx[] = {
@@ -1624,7 +1648,12 @@ void BaseApplication::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
 		ai.usage = VMA_MEMORY_USAGE_CPU_ONLY;
 	}
 
-	auto res = vmaCreateBuffer(m_allocator, &bi, &ai, &buffer.buffer, &buffer.alloc, nullptr);
+	VkResult res;
+	if (alignment > 0) {
+		res = vmaCreateBufferWithAlignment(m_allocator, &bi, &ai, alignment, &buffer.buffer, &buffer.alloc, nullptr);
+	} else {
+		res = vmaCreateBuffer(m_allocator, &bi, &ai, &buffer.buffer, &buffer.alloc, nullptr);
+	}
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to create & allocate buffer");
 }
 
@@ -2091,16 +2120,18 @@ void BaseApplication::create_bottom_acceleration_structure()
 		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
 		&build_info, max_primitive_counts.data(), &sizes);
 
-	fprintf(stdout, "BOTTOM AS: needed scratch memory %" PRIu64 " MB\n", sizes.buildScratchSize / 1024 / 1024);
-	fprintf(stdout, "BOTTOM AS: needed structure memory %" PRIu64 " MB\n", sizes.accelerationStructureSize / 1024 / 1024);
-	
+	fprintf(stdout, "BOTTOM AS: needed structure memory %s\n", vk_helpers::human_readable_size(sizes.accelerationStructureSize).c_str());
+	fprintf(stdout, "BOTTOM AS: needed scratch memory %s\n", vk_helpers::human_readable_size(sizes.buildScratchSize).c_str());
+
+	VkDeviceSize scratch_alignment = vk_helpers::get_acceleration_structure_properties(m_gpu).minAccelerationStructureScratchOffsetAlignment;
+
 	// create all the necessary buffers
 	// structure buffer
 	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.scratch_buffer);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.scratch_buffer, scratch_alignment);
 
 	VkAccelerationStructureCreateInfoKHR ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -2175,16 +2206,17 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
 		&build_info, max_primitive_counts, &sizes);
 
-	fprintf(stdout, "BOTTOM AS SPHERES: needed scratch memory %" PRIu64 " MB\n", sizes.buildScratchSize / 1024 / 1024);
-	fprintf(stdout, "BOTTOM AS SPHERES: needed structure memory %" PRIu64 " MB\n", sizes.accelerationStructureSize / 1024 / 1024);
+	fprintf(stdout, "BOTTOM AS SPHERES: needed structure memory %s\n", vk_helpers::human_readable_size(sizes.accelerationStructureSize).c_str());
+	fprintf(stdout, "BOTTOM AS SPHERES: needed scratch memory %s\n", vk_helpers::human_readable_size(sizes.buildScratchSize).c_str());
 
+	VkDeviceSize scratch_alignment = vk_helpers::get_acceleration_structure_properties(m_gpu).minAccelerationStructureScratchOffsetAlignment;
 	// create all the necessary buffers
 	// structure buffer
 	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.scratch_buffer);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.scratch_buffer, scratch_alignment);
 
 	VkAccelerationStructureCreateInfoKHR ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -2250,16 +2282,17 @@ void BaseApplication::create_top_acceleration_structure()
 		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
 		&build_info, max_primitive_counts, &sizes);
 
-	fprintf(stdout, "TOP AS: needed scratch memory %" PRIu64 " MB\n", sizes.buildScratchSize / 1024 / 1024);
-	fprintf(stdout, "TOP AS: needed structure memory %" PRIu64 " MB\n", sizes.accelerationStructureSize / 1024 / 1024);
+	fprintf(stdout, "TOP AS: needed structure memory %s\n", vk_helpers::human_readable_size(sizes.accelerationStructureSize).c_str());
+	fprintf(stdout, "TOP AS: needed scratch memory %s\n", vk_helpers::human_readable_size(sizes.buildScratchSize).c_str());
 
+	VkDeviceSize scratch_alignment = vk_helpers::get_acceleration_structure_properties(m_gpu).minAccelerationStructureScratchOffsetAlignment;
 	// create all the necessary buffers
 	// structure buffer
 	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.scratch_buffer);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.scratch_buffer, scratch_alignment);
 
 	VkAccelerationStructureCreateInfoKHR ci = {};
 	ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -2668,10 +2701,18 @@ void BaseApplication::create_shader_binding_table()
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR props = vk_helpers::get_raytracing_properties(m_gpu);
 	
 	fprintf(stdout, "group handle size %u\n", props.shaderGroupHandleSize);
+	fprintf(stdout, "group handle alignment %u\n", props.shaderGroupHandleAlignment);
 	fprintf(stdout, "group base alignment %u\n", props.shaderGroupBaseAlignment);
 	fprintf(stdout, "group max stride %u\n", props.maxShaderGroupStride);
 	fprintf(stdout, "max recursion depth %u\n", props.maxRayRecursionDepth);
-	
+
+	if (props.shaderGroupHandleSize != sizeof(ShaderGroupHandle)) {
+		throw std::runtime_error("we assume at compile time that shadergroup handle size is 32 bytes");
+	}
+	if (props.shaderGroupBaseAlignment != 64) {
+		throw std::runtime_error("we assume at compile time that shadergroup base alignment is 64 bytes");
+	}
+
 	const uint32_t num_raygen = 1;
     const uint32_t num_triangle_geometries = m_model_parts.size();
     const uint32_t num_sphere_geometries = 1;
@@ -2684,7 +2725,7 @@ void BaseApplication::create_shader_binding_table()
 		num_miss * get_sbt_miss_record_size();
 
 	create_buffer(sz, VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_rt_sbt);
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_rt_sbt, props.shaderGroupBaseAlignment);
 
 	m_rt_sbt_address = vk_helpers::get_buffer_address(m_device, m_rt_sbt.buffer);
 
@@ -2692,13 +2733,7 @@ void BaseApplication::create_shader_binding_table()
 	auto res = vmaMapMemory(m_allocator, m_rt_sbt.alloc, (void**)&data);
 	if (res != VK_SUCCESS) throw std::runtime_error("failed to map memory");
 
-	if (props.shaderGroupHandleSize != sizeof(ShaderGroupHandle)) {
-		throw std::runtime_error("we assume at compile time that shadergroup handle size is 32 bytes");
-	}
-	if (props.shaderGroupBaseAlignment != 64) {
-		throw std::runtime_error("we assume at compile time that shadergroup base alignment is 64 bytes");
-	}
-
+	
 	const uint32_t group_count = 7u;
 	ShaderGroupHandle handles[group_count];
 	vkGetRayTracingShaderGroupHandlesKHR(m_device, m_rt_pipeline, 0, group_count, sizeof(ShaderGroupHandle) * group_count, handles);
