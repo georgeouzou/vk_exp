@@ -1044,21 +1044,24 @@ QueueFamilyIndices BaseApplication::find_queue_families(VkPhysicalDevice gpu) co
 	for (const auto &family : families) {
 		VkBool32 present_support = false;
 		vkGetPhysicalDeviceSurfaceSupportKHR(gpu, i, m_surface, &present_support);
-		if (family.queueCount > 0 && present_support) {
+		if (!indices.present_family.has_value() && family.queueCount > 0 && present_support) {
 			indices.present_family = i;
 		}
-		if (family.queueCount > 0 && family.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+		if (!indices.graphics_family.has_value() && family.queueCount > 0 && family.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
 			indices.graphics_family = i;
 		}
-		if (family.queueCount > 0 && (family.queueFlags & VK_QUEUE_TRANSFER_BIT)
-				&& !(family.queueFlags & VK_QUEUE_COMPUTE_BIT)
-				&& !(family.queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+		bool is_only_transfer =
+			 (family.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+			!(family.queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+			!(family.queueFlags & VK_QUEUE_COMPUTE_BIT);
+		if (!indices.transfer_family.has_value() && family.queueCount > 0 && is_only_transfer) {
 			indices.transfer_family = i;
 		}
-		if (indices.is_complete()) {
-			break;
-		}
 		i++;
+	}
+
+	if (!indices.transfer_family.has_value()) {
+		indices.transfer_family = indices.graphics_family;
 	}
 
 	return indices;
