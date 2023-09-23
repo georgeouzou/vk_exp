@@ -36,6 +36,7 @@
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
 //#define ENABLE_VALIDATION_LAYERS
+//#define ENABLE_DEBUG_MARKERS
 
 struct ShaderGroupHandle
 {
@@ -593,6 +594,25 @@ static std::string human_readable_size(VkDeviceSize sz)
 	return std::string(out);
 }
 
+static void debug_marker_push(VkCommandBuffer cmd_buf, const char* name)
+{
+#if defined(ENABLE_DEBUG_MARKERS)
+	VkDebugMarkerMarkerInfoEXT m = {};
+	m.sType = VK_STRUCTURE_TYPE_DEBUG_MARKER_MARKER_INFO_EXT;
+	m.pMarkerName = name;
+	vkCmdDebugMarkerBeginEXT(cmd_buf, &m);
+#endif
+}
+
+static void debug_marker_pop(VkCommandBuffer cmd_buf, const char* name)
+{
+#if defined(ENABLE_DEBUG_MARKERS)
+	(void)name;
+	vkCmdDebugMarkerEndEXT(cmd_buf);
+#endif
+}
+
+
 };
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
@@ -630,6 +650,9 @@ BaseApplication::BaseApplication()
 	m_device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+#if defined(ENABLE_DEBUG_MARKERS)
+	m_device_extensions.push_back(VK_EXT_DEBUG_MARKER_EXTENSION_NAME);
+#endif
 }
 
 BaseApplication::~BaseApplication()
@@ -2171,7 +2194,9 @@ void BaseApplication::create_bottom_acceleration_structure()
 	const VkAccelerationStructureBuildRangeInfoKHR* p_build_ranges[] = { geom_ranges.data() };
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	vk_helpers::debug_marker_push(cmd_buf, "BLAS build");
 	vkCmdBuildAccelerationStructuresKHR(cmd_buf, 1, &build_info, p_build_ranges);
+	vk_helpers::debug_marker_pop(cmd_buf, "BLAS build");
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
@@ -2247,7 +2272,9 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 	const VkAccelerationStructureBuildRangeInfoKHR* p_build_ranges[] = { build_ranges };
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	vk_helpers::debug_marker_push(cmd_buf, "BLAS spheres build");
 	vkCmdBuildAccelerationStructuresKHR(cmd_buf, 1, &build_info, p_build_ranges);
+	vk_helpers::debug_marker_pop(cmd_buf, "BLAS spheres build");
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
@@ -2371,7 +2398,9 @@ void BaseApplication::create_top_acceleration_structure()
 	const VkAccelerationStructureBuildRangeInfoKHR* p_build_ranges[] = { build_ranges };
 
 	auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+	vk_helpers::debug_marker_push(cmd_buf, "TLAS build");
 	vkCmdBuildAccelerationStructuresKHR(cmd_buf, 1, &build_info, p_build_ranges);
+	vk_helpers::debug_marker_pop(cmd_buf, "TLAS build");
 	end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
 }
 
@@ -2983,6 +3012,7 @@ void BaseApplication::create_rt_command_buffers()
 			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_GENERAL);
 	
+		vk_helpers::debug_marker_push(m_rt_cmd_buffers[i], "Trace Rays");
 		vkCmdBindPipeline(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline);
 		vkCmdBindDescriptorSets(m_rt_cmd_buffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rt_pipeline_layout,
 			0, 1, &m_rt_desc_sets[i], 0, nullptr);
@@ -3022,9 +3052,13 @@ void BaseApplication::create_rt_command_buffers()
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
 			VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_GENERAL,
 			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_READ_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		vk_helpers::debug_marker_pop(m_rt_cmd_buffers[i], "Trace Rays");
+
+		vk_helpers::debug_marker_push(m_rt_cmd_buffers[i], "Blit");
 		
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
-			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         VkImageBlit blit = {};
@@ -3041,7 +3075,8 @@ void BaseApplication::create_rt_command_buffers()
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
 			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-	
+
+		vk_helpers::debug_marker_pop(m_rt_cmd_buffers[i], "Blit");
 		res = vkEndCommandBuffer(m_rt_cmd_buffers[i]);
 		if (res != VK_SUCCESS) {
 			throw std::runtime_error("failed to end recording commands");
