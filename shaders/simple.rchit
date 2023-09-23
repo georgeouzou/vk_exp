@@ -34,7 +34,6 @@ layout(shaderRecordEXT, std430) buffer ShaderRecord
 } shader_record;
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
-layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
 hitAttributeEXT vec2 bary;
 
 vec3 fetch_normal(uint primitive_id)
@@ -101,29 +100,9 @@ void main()
 		attenuation = material.albedo.rgb;
 	}
 	
-	const uint ray_flags = gl_RayFlagsOpaqueEXT;
-	payload.depth += 1;
-	bool can_recurse = payload.depth < 16; // or 15 ???
-	uint mask = can_recurse && scatter ? 0xFF : 0;
-	traceRayEXT(scene, ray_flags, mask, 0, 2, 0, hit_pos, 0.001, scatter_dir, 100.0, 0);
-	vec3 color;
-	if (can_recurse && scatter) {
-		vec3 in_color = payload.color.rgb;
-		color = in_color * attenuation;
-	} else {
-		color = vec3(0.0); // stop accumulating light
-	}
-	
-	//const vec3 shadow_ray_orig = hit_pos + hit_normal * 0.001f;
-	//const vec3 to_light1 = normalize(ubo.light_pos.xyz - shadow_ray_orig);
-	//
-	//const uint shadow_ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT; // | gl_RayFlagsSkipClosestHitShaderEXT;
-	////shadow_payload.in_shadow = 1.0;
-	//traceRayEXT(scene, shadow_ray_flags, 0xFF, 1, 2, 1, shadow_ray_orig, 0.01, to_light1, 1000.0, 1);
-	//
-	//const float ambient = 0.1;
-	//const float lighting1 = shadow_payload.in_shadow > 0.0 ? ambient :  max(ambient, dot(hit_normal, to_light1));
-	//vec3 out_color = lighting1 * color;
-
-	payload.color = vec4(color, 1.0);
+	payload.ray_dir = scatter_dir;
+	payload.color = packUnorm4x8(vec4(attenuation, 1.0));
+	payload.ray_orig = hit_pos;
+	payload.scatters = scatter;
+	payload.hit = true;
 }

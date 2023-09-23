@@ -3,9 +3,12 @@
 
 struct HitPayload
 {
-	vec4 color;
 	uint seed;
-	int depth;
+	vec3 ray_dir;
+	uint color;
+	vec3 ray_orig;
+	bool scatters;
+	bool hit;
 };
 
 struct ShadowPayload

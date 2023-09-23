@@ -1969,8 +1969,10 @@ void BaseApplication::create_spheres()
 			sphere.bbox.maxY = aabb_max.y;
 			sphere.bbox.maxZ = aabb_max.z;
 			float material_rand = rgen();
+
 			if (material_rand > 0.90) {
-				sphere.material = materials::MaterialType::EMISSIVE;
+				//sphere.material = materials::MaterialType::EMISSIVE;
+				sphere.material = materials::MaterialType::METAL;
 			} else if (material_rand > 0.4) {
 				sphere.material = materials::MaterialType::METAL;
 			} else {
@@ -2571,7 +2573,7 @@ void BaseApplication::create_raytracing_pipeline()
 	ci.pStages = stages.data();
 	ci.groupCount = uint32_t(groups.size());
 	ci.pGroups = groups.data();
-	ci.maxPipelineRayRecursionDepth = 15;
+	ci.maxPipelineRayRecursionDepth = 1;
 	ci.pLibraryInfo = &libci;
 	ci.pLibraryInterface = nullptr;
 	ci.layout = m_rt_pipeline_layout;
