@@ -73,7 +73,7 @@ void main()
 	const bool metallic = material.metallic > 0.3;
 	const bool transparent = material.albedo.a < 1.0;
 	vec3 scatter_dir;
-	bool scatter;
+	bool scatters;
 	vec3 attenuation;
 	if (transparent) {
 		const float ior = material.ior;
@@ -87,22 +87,23 @@ void main()
 		} else {
 			scatter_dir = refract(gl_WorldRayDirectionEXT, hit_normal, ratio);
 		}
-		scatter = true;
+		scatters = true;
 		attenuation = vec3(1.0);
 	} else if (metallic) {
 		vec3 reflected = reflect(gl_WorldRayDirectionEXT, hit_normal);
 		scatter_dir = reflected + material.roughness*random_in_unit_sphere(payload.seed);
-		scatter = dot(scatter_dir, hit_normal) > 0.0;
+		scatters = dot(scatter_dir, hit_normal) > 0.0;
 		attenuation = material.albedo.rgb;
 	} else {
 		scatter_dir = random_in_hemisphere(payload.seed, hit_normal);
-		scatter = true;
+		scatters = true;
 		attenuation = material.albedo.rgb;
 	}
 	
 	payload.ray_dir = scatter_dir;
-	payload.color = packUnorm4x8(vec4(attenuation, 1.0));
-	payload.ray_orig = hit_pos;
-	payload.scatters = scatter;
-	payload.hit = true;
+	payload.ray_t = gl_HitTEXT;
+	payload.scatter_color = attenuation;
+	payload.scatters = scatters;
+	payload.emissive_color = vec3(0.0);
+	payload.emits = false;
 }

@@ -5,10 +5,11 @@ struct HitPayload
 {
 	uint seed;
 	vec3 ray_dir;
-	uint color;
-	vec3 ray_orig;
+	float ray_t;
+	vec3 scatter_color;
 	bool scatters;
-	bool hit;
+	vec3 emissive_color;
+	bool emits;
 };
 
 struct ShadowPayload

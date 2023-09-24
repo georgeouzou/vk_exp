@@ -41,26 +41,27 @@ void main()
 	const bool metallic = sph.material == 1;
 	const bool emissive = sph.material == 2;
 	vec3 scatter_dir;
-	bool scatter;
-	vec3 emitted = vec3(0.0);
+	bool scatters;
+	vec3 emissive_color = vec3(0.0);
 	if (metallic) {
 		vec3 reflected = reflect(gl_WorldRayDirectionEXT, hit_normal);
 		scatter_dir = reflected + sph.fuzz*random_in_unit_sphere(payload.seed);;
-		scatter = dot(scatter_dir, hit_normal) > 0.0;
+		scatters = dot(scatter_dir, hit_normal) > 0.0;
 	} else if (emissive) {
-		emitted = sph.albedo.rgb;
+		emissive_color = sph.albedo.rgb;
 		scatter_dir = vec3(0.0);
-		scatter = false;
+		scatters = false;
 	} else { // lambertian 
 		scatter_dir = random_in_hemisphere(payload.seed, hit_normal);
-		scatter = true;
+		scatters = true;
 	}
 
 	const vec3 attenuation = sph.albedo.rgb;
 
 	payload.ray_dir = scatter_dir;
-	payload.color = packUnorm4x8(vec4(attenuation, 1.0));
-	payload.ray_orig = hit_pos + 0.001*hit_normal;
-	payload.scatters = scatter;
-	payload.hit = true;
+	payload.ray_t = gl_HitTEXT;
+	payload.scatter_color = attenuation;
+	payload.scatters = scatters;
+	payload.emissive_color = emissive_color;
+	payload.emits = emissive;
 }

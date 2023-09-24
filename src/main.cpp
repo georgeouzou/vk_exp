@@ -1971,8 +1971,7 @@ void BaseApplication::create_spheres()
 			float material_rand = rgen();
 
 			if (material_rand > 0.90) {
-				//sphere.material = materials::MaterialType::EMISSIVE;
-				sphere.material = materials::MaterialType::METAL;
+				sphere.material = materials::MaterialType::EMISSIVE;
 			} else if (material_rand > 0.4) {
 				sphere.material = materials::MaterialType::METAL;
 			} else {

@@ -10,10 +10,11 @@ void main()
     float t = float(gl_LaunchIDEXT.y) / float(gl_LaunchSizeEXT.y);
     float darken = 0.9;
 
-    vec4 color;
-    color.rgb = darken * mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
-    color.a = 1.0;
+    vec3 color =  darken * mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
 
-    payload.color = packUnorm4x8(color);
-    payload.hit = false;
+	payload.ray_t = -1.0;
+	payload.scatters = false;
+	payload.scatter_color = vec3(0.0);
+	payload.emits = true;
+	payload.emissive_color = color;
 }
