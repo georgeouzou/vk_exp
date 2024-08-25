@@ -35,7 +35,7 @@
 #include "materials.hpp"
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
-//#define ENABLE_VALIDATION_LAYERS
+#define ENABLE_VALIDATION_LAYERS
 //#define ENABLE_DEBUG_MARKERS
 
 struct ShaderGroupHandle
@@ -1048,6 +1048,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		rq_features.rayQuery &&
 		as_features.accelerationStructure &&
 		v12_features.bufferDeviceAddress &&
+		v12_features.scalarBlockLayout &&
 		sh2.synchronization2 &&
 		dr_features.dynamicRendering;
 	
@@ -1134,6 +1135,7 @@ void BaseApplication::create_logical_device()
 	VkPhysicalDeviceVulkan12Features v12f = {};
 	v12f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	v12f.bufferDeviceAddress = VK_TRUE;
+	v12f.scalarBlockLayout = VK_TRUE;
 	v12f.pNext = &drtf;
 
 	VkPhysicalDeviceSynchronization2FeaturesKHR sh2 = {};
