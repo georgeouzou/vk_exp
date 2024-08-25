@@ -61,6 +61,7 @@ target_link_libraries(${app} volk)
 
 set(VMA_DIR "${EXTERN_DIR}/vma")
 add_subdirectory(${VMA_DIR})
+target_include_directories(${app} PRIVATE ${VMA_DIR}/include)
 target_link_libraries(${app} GPUOpen::VulkanMemoryAllocator)
 
 # vulkan headers from Vulkan SDK

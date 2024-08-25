@@ -18,7 +18,7 @@
 
 #include <volk.h>
 #include <shaderc/shaderc.hpp>
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
 #include <glm/glm.hpp>
