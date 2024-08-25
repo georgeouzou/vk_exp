@@ -2156,7 +2156,7 @@ void BaseApplication::create_bottom_acceleration_structure()
 
 	// create all the necessary buffers
 	// structure buffer
-	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -2243,7 +2243,7 @@ void BaseApplication::create_bottom_acceleration_structure_spheres()
 	VkDeviceSize scratch_alignment = vk_helpers::get_acceleration_structure_properties(m_gpu).minAccelerationStructureScratchOffsetAlignment;
 	// create all the necessary buffers
 	// structure buffer
-	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+	create_buffer(sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_bottom_as_spheres.structure_buffer);
 	// scratch buffer
 	create_buffer(sizes.buildScratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
