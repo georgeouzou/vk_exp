@@ -1051,7 +1051,7 @@ bool BaseApplication::is_gpu_suitable(VkPhysicalDevice gpu) const
 		v12_features.scalarBlockLayout &&
 		sh2.synchronization2 &&
 		dr_features.dynamicRendering;
-	
+
 	return indices.is_complete() && extensions_supported && supported_features && swapchain_adequate;
 }
 
@@ -2374,11 +2374,12 @@ void BaseApplication::create_top_acceleration_structure()
 
 		vmaUnmapMemory(m_allocator, staging.alloc);
 
+		const uint32_t instances_alignment = 16;
 		create_buffer(instances_size,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 			VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 			VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.instances_buffer);
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_top_as.instances_buffer, instances_alignment);
 		copy_buffer(staging.buffer, m_top_as.instances_buffer.buffer, instances_size);
 
 		vmaDestroyBuffer(m_allocator, staging.buffer, staging.alloc);
