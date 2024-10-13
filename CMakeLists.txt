@@ -23,6 +23,7 @@ set(src
 	src/tiny_obj_loader.cpp
 	src/orbit_camera.cpp
 	src/vma.cpp
+	src/model.cpp
 )
 
 add_executable(${app} ${src})
@@ -52,6 +53,12 @@ target_include_directories(${app} PRIVATE ${GLM_DIR})
 # tinyobjloader
 set(TINYOBJLOADER_DIR "${EXTERN_DIR}/tinyobjloader")
 target_include_directories(${app} PRIVATE ${TINYOBJLOADER_DIR})
+
+set(TINYGLTF_DIR "${EXTERN_DIR}/tinygltf")
+set(TINYGLTF_HEADER_ONLY ON CACHE INTERNAL "Header only gltf loader" FORCE)
+set(TINYGLTF_INSTALL OFF CACHE INTERNAL "Install gltf loader" FORCE)
+add_subdirectory(${TINYGLTF_DIR})
+target_link_libraries(${app} tinygltf)
 
 # volk
 set(VOLK_DIR "${EXTERN_DIR}/volk")
