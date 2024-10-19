@@ -26,9 +26,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <GLFW/glfw3.h>
-#include <tiny_obj_loader.h>
 
-#include "stb_image.h"
 #include "orbit_camera.h"
 #include "shader_dir.h"
 #include "materials.hpp"
@@ -604,11 +602,10 @@ void BaseApplication::init_window()
 	glfwSetWindowUserPointer(m_window, this);
 
 	m_camera.set_window_size(m_width, m_height);
-	m_camera.set_look_at(
-		glm::vec3(2.0f, 2.0f, 2.0f),
-		glm::vec3(0.0f, 0.0f, 0.0f),
-		glm::vec3(0.0f, 0.0f, 1.0f)
-	);
+
+	const glm::vec3 pos = glm::vec3(2.0f, 2.0f, 2.0f);
+	const glm::vec3 target = glm::vec3(0.0f, 0.0f, 0.0f);
+	m_camera.set_look_at(pos, target, glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
 void BaseApplication::init_vulkan()
@@ -1775,109 +1772,7 @@ void BaseApplication::load_model()
 	m_model_indices = m.get_indices();
 	m_model_vertices = m.get_vertices();
 	m_model_parts = m.get_parts();
-
-#if 0
-	tinyobj::attrib_t attrib;
-	std::vector<tinyobj::shape_t> parts;
-	std::vector<tinyobj::material_t> materials;
-	std::string warn, err;
-	if (!tinyobj::LoadObj(&attrib, &parts, &materials, &warn, &err, "resources/bmw.obj", "resources")) {
-		throw std::runtime_error(warn + err);
-	}
-    
-	for (const auto& part : parts) {
-        std::unordered_map<Vertex, uint32_t> unique_vtx = {};
-        std::vector<Vertex> part_vertices;
-        std::vector<uint32_t> part_indices;
-		for (const auto& index : part.mesh.indices) {
-			Vertex vertex = {};
-			if (index.vertex_index < 0 || index.texcoord_index < 0 || index.normal_index < 0) continue;
-			vertex.pos = {
-				attrib.vertices[3 * index.vertex_index + 0]+400,
-				attrib.vertices[3 * index.vertex_index + 1],
-				attrib.vertices[3 * index.vertex_index + 2]+200,
-			};
-			vertex.tex_coord = {
-				attrib.texcoords[2 * index.texcoord_index + 0],
-				1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
-			};
-			vertex.normal = {
-				attrib.normals[3 * index.normal_index + 0],
-				attrib.normals[3 * index.normal_index + 1],
-				attrib.normals[3 * index.normal_index + 2]
-			};
-			if (unique_vtx.count(vertex) == 0) {
-				unique_vtx[vertex] = uint32_t(part_vertices.size());
-				part_vertices.push_back(vertex);
-			}
-			part_indices.push_back(unique_vtx[vertex]);
-		}
-        // append part data to model data
-        if (part_indices.size() == 0) {
-            assert(part_vertices.size() == 0);
-            continue;
-        }
-
-        uint32_t vertex_offset = m_model_vertices.size();
-        uint32_t index_offset = m_model_indices.size();
-        m_model_vertices.insert(m_model_vertices.end(), part_vertices.begin(), part_vertices.end());
-        m_model_indices.insert(m_model_indices.end(), part_indices.begin(), part_indices.end());
-        
-        ModelPart part_info = {}; 
-        part_info.vertex_offset = vertex_offset;
-        part_info.vertex_count = part_vertices.size();
-        part_info.index_offset = index_offset;
-        part_info.index_count = part_indices.size();
-
-		// set material
-		tinyobj::material_t tmat = materials[part.mesh.material_ids[0]];
-		materials::MTLMaterial mtl; 
-		mtl.diffuse_color = glm::make_vec3(&tmat.diffuse[0]);
-		mtl.ns = tmat.shininess;
-		mtl.specular_color = glm::make_vec3(&tmat.specular[0]);
-		
-		part_info.pbr_material = materials::convert_mtl_to_pbr(mtl);
-		part_info.pbr_material.albedo.a = tmat.dissolve;
-		part_info.pbr_material.ior = tmat.ior;
-        m_model_parts.push_back(part_info);
-        printf("Add part %s {v0 %u, vc %u, i0 %u, ic %u}\t material [albedo {%.2f, %.2f, %.2f, %.2f}, metallic %.2f, roughness %.2f\n",
-			part.name.c_str(),
-			part_info.vertex_offset, part_info.vertex_count, part_info.index_offset, part_info.index_count,
-			part_info.pbr_material.albedo.r, part_info.pbr_material.albedo.g, 
-			part_info.pbr_material.albedo.b, part_info.pbr_material.albedo.a,
-			part_info.pbr_material.metallic, part_info.pbr_material.roughness);
-
-	}
-#endif
-#if 1
-    fprintf(stdout, "Loaded model part: num vertices %" PRIu64 ", num indices %" PRIu64 "\n",
-        m_model_vertices.size(),
-        m_model_indices.size());
-
-	auto [vxmin, vxmax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<0>);
-	auto [vymin, vymax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<1>);
-	auto [vzmin, vzmax] = std::minmax_element(m_model_vertices.begin(), m_model_vertices.end(), Vertex::compare_position<2>);
-	glm::vec3 min_coord(vxmin->pos.x, vymin->pos.y, vzmin->pos.z);
-	glm::vec3 max_coord(vxmax->pos.x, vymax->pos.y, vzmax->pos.z);
-	glm::vec3 diff_coord = max_coord - min_coord;
-	float scale = std::min({ diff_coord.x, diff_coord.y, diff_coord.z });
-	glm::mat4 model_scale = glm::scale(glm::mat4(1.0), glm::vec3(1.0f / scale));
-
-	// translate model to its centroid
-	glm::vec3 centroid = (min_coord + max_coord) * 0.5f;
-	glm::mat4 model_translate = glm::translate(glm::mat4(1.0), -centroid);
-
-	// x axis is the car's major axis, y is up
-	glm::mat4 model_rotate = glm::rotate(glm::mat4(1.0f), glm::half_pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));
-	model_rotate = glm::rotate(model_rotate, glm::half_pi<float>(), glm::vec3(1.0, 0.0, 0.0));
-
-	// y is up in car coordinates
-	float half_height = diff_coord.y * 0.5f;
-	half_height /= scale;
-	glm::mat4 translate_to_ground = glm::translate(glm::mat4(1.0), glm::vec3(0.0f, 0.0f, half_height));
-
-	m_model_tranformation = translate_to_ground * model_scale * model_rotate * model_translate;
-#endif
+	m_model_tranformation = m.get_transformation();
 }
 
 void BaseApplication::create_spheres()
@@ -1893,7 +1788,7 @@ void BaseApplication::create_spheres()
 		for (int b = -10; b < 10; ++b) {
 			SpherePrimitive sphere = {};
 			float radius = 0.1 * glm::clamp(rgen(), 0.2f, 1.0f);
-			glm::vec3 center = glm::vec3(scale*a + scale *rgen(), scale*b + scale*rgen(), +radius);
+			glm::vec3 center = glm::vec3(scale * a + scale * rgen(), +radius, scale * b + scale * rgen());
 			// compute aabb
 			glm::vec3 aabb_min = center - glm::vec3(radius);
 			glm::vec3 aabb_max = center + glm::vec3(radius);
@@ -1925,7 +1820,7 @@ void BaseApplication::create_spheres()
 	// add a really big one
 	{
 		SpherePrimitive earth = {};
-		glm::vec3 center = glm::vec3(0.0, 0.0, -3000-0.01);
+		glm::vec3 center = glm::vec3(0.0, -3000 - 0.01, 0.0);
 		float radius = 3000;
 		glm::vec3 aabb_min = center - glm::vec3(radius);
 		glm::vec3 aabb_max = center + glm::vec3(radius);
