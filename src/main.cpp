@@ -23,7 +23,6 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE // projection matrix depth range 0-1
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 
 #include <GLFW/glfw3.h>
 
@@ -2424,11 +2423,11 @@ void BaseApplication::create_raytracing_pipeline()
 
 void BaseApplication::create_rt_image()
 {
-	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R8G8B8A8_UNORM,
+	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
 				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
 				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img);
 
-	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img.image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 void BaseApplication::create_descriptor_pool()

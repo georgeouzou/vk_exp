@@ -24,6 +24,16 @@ vec2 subpixel_jitter(uint seed, uint samples)
 	return jitter;
 }
 
+vec4 srgb_to_linear(vec4 v)
+{
+	return pow(v, vec4(2.2));
+}
+
+vec4 linear_to_srgb(vec4 v)
+{
+	return pow(v, vec4(1.0/2.2));
+}
+
 void main()
 {
 	uvec2 index = gl_LaunchIDEXT.xy;
@@ -67,14 +77,14 @@ void main()
 		}
 	}
 
-	// gamma correct, for gamma = 2.0
-	color = sqrt(color);
-
 	if (ubo.samples_accum > 0) { // uniform branching
-		float accumulator = 1.0 / float(ubo.samples_accum + 1);
-		vec3 accum_color = imageLoad(result, ivec2(index)).xyz;
+		const float accumulator = 1.0 / float(ubo.samples_accum + 1);
+		vec3 accum_color = imageLoad(result, ivec2(index)).rgb;
+		accum_color = srgb_to_linear(vec4(accum_color, 0.0)).rgb;
 		color = mix(accum_color, color, accumulator);
 	}
+
+	color = linear_to_srgb(vec4(color, 0.0)).rgb;
 	imageStore(result, ivec2(index), vec4(color, 1.0));
 }
 
