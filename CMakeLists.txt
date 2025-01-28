@@ -27,6 +27,8 @@ set(src
 
 add_executable(${app} ${src})
 set_property(TARGET ${app} PROPERTY CXX_STANDARD 17)
+#target_compile_options(${app} PRIVATE -fsanitize=address)
+#target_link_options(${app} PRIVATE -fsanitize=address)
 
 if (WIN32)
 	add_definitions(-DVK_USE_PLATFORM_WIN32_KHR)
