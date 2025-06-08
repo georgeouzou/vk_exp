@@ -6,7 +6,7 @@
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
-layout(set = 0, binding = 1, rgba8) uniform image2D result;
+layout(set = 0, binding = 1, rgba16f) uniform image2D result;
 
 layout(set = 0, binding = 2, std140) uniform SceneUniformsBlock 
 {
@@ -22,6 +22,16 @@ vec2 subpixel_jitter(uint seed, uint samples)
 	float r1 = random_float(seed);
 	vec2 jitter = samples == 0 ? vec2(0.5) : vec2(r0, r1);
 	return jitter;
+}
+
+vec3 linear_to_srgb(vec3 c)
+{
+	return pow(c, vec3(1.0/2.2));
+}
+
+vec3 srgb_to_linear(vec3 c)
+{
+	return pow(c, vec3(2.2));
 }
 
 void main()
@@ -67,14 +77,11 @@ void main()
 		}
 	}
 
-	// gamma correct, for gamma = 2.0
-	color = sqrt(color);
-
 	if (ubo.samples_accum > 0) { // uniform branching
 		float accumulator = 1.0 / float(ubo.samples_accum + 1);
-		vec3 accum_color = imageLoad(result, ivec2(index)).xyz;
+		vec3 accum_color = srgb_to_linear(imageLoad(result, ivec2(index)).xyz);
 		color = mix(accum_color, color, accumulator);
 	}
-	imageStore(result, ivec2(index), vec4(color, 1.0));
+	imageStore(result, ivec2(index), vec4(linear_to_srgb(color), 1.0));
 }
 

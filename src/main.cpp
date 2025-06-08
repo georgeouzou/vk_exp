@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <random>
 #include <cassert>
+#include <thread>
 
 #include <volk.h>
 #include <shaderc/shaderc.hpp>
@@ -33,9 +34,10 @@
 #include "orbit_camera.h"
 #include "shader_dir.h"
 #include "materials.hpp"
+#include "cuda_shared.hpp"
 
 const int MAX_FRAMES_IN_FLIGHT = 3;
-#define ENABLE_VALIDATION_LAYERS
+//#define ENABLE_VALIDATION_LAYERS
 //#define ENABLE_DEBUG_MARKERS
 
 struct ShaderGroupHandle
@@ -264,6 +266,7 @@ private:
 	void create_logical_device();
 
 	void create_allocator();
+	void create_denoiser();
 
 	void create_surface();
 	
@@ -310,7 +313,7 @@ private:
 	void create_raytracing_pipeline_layout();
 	void create_raytracing_pipeline();
 
-	void create_rt_image();
+	void create_rt_image_and_filter();
 	void create_descriptor_pool();
 	void create_descriptor_sets();
 	void create_rt_descriptor_sets();
@@ -322,11 +325,14 @@ private:
 	void create_command_pools();
 	void create_command_buffers();
 	void create_rt_command_buffers();
+	void create_rt_present_command_buffers();
 	
 	void create_sync_objects();
 
 	void update_uniform_buffer(uint32_t idx);
 	void draw_frame();
+	void draw_frame_rt();
+	void draw_frame_raster();
 
 	void cleanup_swapchain();
 	void recreate_swapchain();
@@ -396,6 +402,10 @@ private:
 	VkImageView m_rt_img_view{ VK_NULL_HANDLE };
 	VmaBufferAllocation m_rt_sbt;
 	VkDeviceAddress m_rt_sbt_address;
+
+	VmaImageAllocation m_rt_img_denoised;
+	std::unique_ptr<CudaSharedBuffer> m_rt_img_buffer;
+	std::unique_ptr<CudaSharedBuffer> m_rt_img_denoised_buffer;
 	
 	std::vector<VmaBufferAllocation> m_uni_buffers;
 
@@ -407,12 +417,15 @@ private:
 	VkCommandPool m_transfer_cmd_pool{ VK_NULL_HANDLE };
 	std::vector<VkCommandBuffer> m_cmd_buffers;
 	std::vector<VkCommandBuffer> m_rt_cmd_buffers;
+	std::vector<VkCommandBuffer> m_rt_present_cmd_buffers;
 	
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_img_available{ VK_NULL_HANDLE };
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> m_sem_render_finished{ VK_NULL_HANDLE };
-	std::array<VkFence, MAX_FRAMES_IN_FLIGHT> m_fen_flight{ VK_NULL_HANDLE };
+	std::array<VkFence, MAX_FRAMES_IN_FLIGHT> m_fen_flight { VK_NULL_HANDLE };
+	std::unique_ptr<CudaSharedSemaphore> m_denoiser_semaphore;
 
 	uint32_t m_samples_accumulated{ 0 };
+	std::unique_ptr<CudaDenoiser> m_denoiser;
 };
 
 static std::vector<char> read_file(const std::string &filename)
@@ -612,6 +625,22 @@ static void debug_marker_pop(VkCommandBuffer cmd_buf, const char* name)
 #endif
 }
 
+template<typename T>
+static void set_debug_name(VkDevice device, T object, const char *name)
+{
+#ifdef ENABLE_VALIDATION_LAYERS
+	VkObjectType t = VK_OBJECT_TYPE_UNKNOWN;
+	if constexpr (std::is_same<T, VkImage>::value) {
+		t = VK_OBJECT_TYPE_IMAGE;
+	}
+	static_assert(sizeof(T) == sizeof(uint64_t));
+	VkDebugUtilsObjectNameInfoEXT ni = { VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT, 0 };
+	ni.objectType = t;
+	ni.pObjectName = name;
+	ni.objectHandle = reinterpret_cast<uint64_t>(object);
+	vkSetDebugUtilsObjectNameEXT(device, &ni);
+#endif
+} 
 
 };
 
@@ -650,6 +679,9 @@ BaseApplication::BaseApplication()
 	m_device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
 	m_device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+	m_device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
 #if defined(ENABLE_DEBUG_MARKERS)
 	m_device_extensions.push_back(VK_EXT_DEBUG_MARKER_EXTENSION_NAME);
 #endif
@@ -710,13 +742,15 @@ void BaseApplication::init_vulkan()
 
 	create_allocator();
 
+	create_denoiser();
+
 	create_command_pools();
 	create_sync_objects();
 
 	create_swapchain();
 	create_image_views();
 	create_depth_resources();
-	create_rt_image();
+	create_rt_image_and_filter();
 
 	create_descriptor_set_layout();
 	create_graphics_pipeline();
@@ -745,6 +779,7 @@ void BaseApplication::init_vulkan()
 
 	create_command_buffers();
 	create_rt_command_buffers();
+	create_rt_present_command_buffers();
 }
 
 void BaseApplication::recreate_swapchain()
@@ -762,7 +797,7 @@ void BaseApplication::recreate_swapchain()
 	create_swapchain();
 	create_image_views();
 	create_depth_resources();
-	create_rt_image();
+	create_rt_image_and_filter();
 
 	create_descriptor_set_layout();
 	create_graphics_pipeline();
@@ -774,6 +809,7 @@ void BaseApplication::recreate_swapchain()
 
 	create_command_buffers();
 	create_rt_command_buffers();
+	create_rt_present_command_buffers();
 }
 
 void BaseApplication::main_loop()
@@ -800,6 +836,8 @@ void BaseApplication::cleanup_swapchain()
 		if (m_rt_cmd_buffers.size()) {
 			vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
 				static_cast<uint32_t>(m_rt_cmd_buffers.size()), m_rt_cmd_buffers.data());
+			vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
+				static_cast<uint32_t>(m_rt_present_cmd_buffers.size()), m_rt_present_cmd_buffers.data());
 		}
 		if (m_cmd_buffers.size()) {
 			vkFreeCommandBuffers(m_device, m_graphics_cmd_pool,
@@ -818,6 +856,9 @@ void BaseApplication::cleanup_swapchain()
 	// cleanup raytracing stuff
 	vkDestroyImageView(m_device, m_rt_img_view, nullptr);
 	vmaDestroyImage(m_allocator, m_rt_img.image, m_rt_img.alloc);
+	vmaDestroyImage(m_allocator, m_rt_img_denoised.image, m_rt_img_denoised.alloc);
+	m_rt_img_buffer.reset();
+	m_rt_img_denoised_buffer.reset();
 	
 	for (auto img_view : m_swapchain_img_views) {
 		vkDestroyImageView(m_device, img_view, nullptr);
@@ -854,6 +895,7 @@ void BaseApplication::cleanup()
 			vkDestroySemaphore(m_device, m_sem_img_available[i], nullptr);
 			vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
 		}
+		m_denoiser_semaphore.reset();
 		vkDestroyCommandPool(m_device, m_transfer_cmd_pool, nullptr);
 		vkDestroyCommandPool(m_device, m_graphics_cmd_pool, nullptr);
 	}
@@ -1136,6 +1178,7 @@ void BaseApplication::create_logical_device()
 	v12f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	v12f.bufferDeviceAddress = VK_TRUE;
 	v12f.scalarBlockLayout = VK_TRUE;
+	v12f.timelineSemaphore = VK_TRUE;
 	v12f.pNext = &drtf;
 
 	VkPhysicalDeviceSynchronization2FeaturesKHR sh2 = {};
@@ -1207,11 +1250,25 @@ void BaseApplication::create_allocator()
 	ai.device = m_device;
 	ai.instance = m_instance;
 	ai.pVulkanFunctions = &funcs;
-	ai.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+	ai.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT | VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT;
+
 	auto res = vmaCreateAllocator(&ai, &m_allocator);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("could not create vma allocator");
 	}
+}
+
+void BaseApplication::create_denoiser()
+{
+	VkPhysicalDeviceIDProperties id_props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES, 0 };
+	VkPhysicalDeviceProperties2 props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, 0 };
+	props.pNext = &id_props;
+	vkGetPhysicalDeviceProperties2(m_gpu, &props);
+
+	std::array<uint8_t, VK_UUID_SIZE> uuid;
+	memcpy(uuid.data(), id_props.deviceUUID, VK_UUID_SIZE);
+	m_denoiser = std::make_unique<CudaDenoiser>(uuid);
+	m_denoiser_semaphore = std::make_unique<CudaSharedSemaphore>(m_device);
 }
 
 void BaseApplication::create_surface()
@@ -2594,13 +2651,30 @@ void BaseApplication::create_raytracing_pipeline()
 	vkDestroyShaderModule(m_device, sphere_int_module, nullptr);
 }
 
-void BaseApplication::create_rt_image()
+void BaseApplication::create_rt_image_and_filter()
 {
-	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R8G8B8A8_UNORM,
-				 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
-				 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img);
+	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img);
+	vk_helpers::set_debug_name(m_device, m_rt_img.image, "m_rt_img");
+	{
+		auto cmd_buf = begin_single_time_commands(m_graphics_queue, m_graphics_cmd_pool);
+		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vk_helpers::image_barrier(cmd_buf, m_rt_img.image, isr,
+			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		end_single_time_commands(m_graphics_queue, m_graphics_cmd_pool, cmd_buf);
+	}
+	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img.image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT);
 
-	m_rt_img_view = vk_helpers::create_image_view_2d(m_device, m_rt_img.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+	create_image(m_swapchain_extent.width, m_swapchain_extent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_rt_img_denoised);
+	vk_helpers::set_debug_name(m_device, m_rt_img_denoised.image, "m_rt_img_denoised");
+
+	VkDeviceSize sz = m_swapchain_extent.width * m_swapchain_extent.height * 4 * sizeof(uint16_t); // half
+	m_rt_img_buffer = std::make_unique<CudaSharedBuffer>(m_gpu, m_device, sz, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+	m_rt_img_denoised_buffer = std::make_unique<CudaSharedBuffer>(m_gpu, m_device, sz, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 }
 
 void BaseApplication::create_descriptor_pool()
@@ -3013,7 +3087,7 @@ void BaseApplication::create_rt_command_buffers()
 		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 		
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
-			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_GENERAL);
 	
 		vk_helpers::debug_marker_push(m_rt_cmd_buffers[i], "Trace Rays");
@@ -3055,33 +3129,102 @@ void BaseApplication::create_rt_command_buffers()
 
 		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_rt_img.image, isr,
 			VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_GENERAL,
-			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_READ_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+			VK_PIPELINE_STAGE_2_COPY_BIT_KHR, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		vk_helpers::debug_marker_pop(m_rt_cmd_buffers[i], "Trace Rays");
 
-		vk_helpers::debug_marker_push(m_rt_cmd_buffers[i], "Blit");
-		
-		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
+		vk_helpers::debug_marker_push(m_rt_cmd_buffers[i], "Copy for denoiser");
+
+		VkBufferImageCopy cpy = {};
+		cpy.bufferOffset = 0;
+		cpy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		cpy.imageSubresource.mipLevel = 0;
+		cpy.imageSubresource.baseArrayLayer = 0;
+		cpy.imageSubresource.layerCount = 1;
+		cpy.imageOffset = { 0, 0, 0 };
+		cpy.imageExtent = { m_swapchain_extent.width, m_swapchain_extent.height, 1 };
+		vkCmdCopyImageToBuffer(m_rt_cmd_buffers[i], m_rt_img.image,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_rt_img_buffer->get_vk_buffer(), 1, &cpy);
+
+		vk_helpers::debug_marker_pop(m_rt_cmd_buffers[i], "Copy for denoiser");
+
+		res = vkEndCommandBuffer(m_rt_cmd_buffers[i]);
+		if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to end recording commands");
+		}
+	}
+}
+
+void BaseApplication::create_rt_present_command_buffers()
+{
+	// the command buffers are the same number as the swapchain images
+	m_rt_present_cmd_buffers.resize(m_swapchain_images.size());
+
+	VkCommandBufferAllocateInfo cbi = {};
+	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cbi.commandPool = m_graphics_cmd_pool;
+	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cbi.commandBufferCount = (uint32_t)m_rt_present_cmd_buffers.size();
+
+	auto res = vkAllocateCommandBuffers(m_device, &cbi, m_rt_present_cmd_buffers.data());
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("failed to allocate command buffers");
+	}
+
+	for (size_t i = 0; i < m_rt_present_cmd_buffers.size(); ++i) {
+		VkCommandBufferBeginInfo bi = {};
+		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		bi.flags = 0;
+		bi.pInheritanceInfo = nullptr;
+		res = vkBeginCommandBuffer(m_rt_present_cmd_buffers[i], &bi);
+		if (res != VK_SUCCESS) { throw std::runtime_error("failed to begin recording commands"); }
+
+		VkImageSubresourceRange isr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vk_helpers::image_barrier(m_rt_present_cmd_buffers[i], m_rt_img_denoised.image, isr,
 			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_2_COPY_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		{
+			// copy denoised buffer to denoised image
+			VkBufferImageCopy cpy = {};
+			cpy.bufferOffset = 0;
+			cpy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			cpy.imageSubresource.mipLevel = 0;
+			cpy.imageSubresource.baseArrayLayer = 0;
+			cpy.imageSubresource.layerCount = 1;
+			cpy.imageOffset = { 0, 0, 0 };
+			cpy.imageExtent = { m_swapchain_extent.width, m_swapchain_extent.height, 1 };
+			vkCmdCopyBufferToImage(m_rt_present_cmd_buffers[i], m_rt_img_denoised_buffer->get_vk_buffer(), m_rt_img_denoised.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+		}
+
+		vk_helpers::image_barrier(m_rt_present_cmd_buffers[i], m_rt_img_denoised.image, isr,
+			VK_PIPELINE_STAGE_2_COPY_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_READ_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		// we will change the layout of the swapchain image (write to the image), so we need to wait the Acquire semaphore
+		// before we blit. We do this with an execution dependancy (see also the wait semaphore stage). What is the last thing we do? COPY
+		// so lets wait for copy.
+		vk_helpers::image_barrier(m_rt_present_cmd_buffers[i], m_swapchain_images[i], isr,
+			VK_PIPELINE_STAGE_2_COPY_BIT_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_UNDEFINED, 
 			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-        VkImageBlit blit = {};
-        blit.dstOffsets[0] = { 0, 0, 0 };
-        blit.dstOffsets[1] = { int32_t(m_width), int32_t(m_height), 1 };
-        blit.srcOffsets[0] = { 0, 0, 0 };
-        blit.srcOffsets[1] = { int32_t(m_width), int32_t(m_height), 1 };
-        blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        vkCmdBlitImage(m_rt_cmd_buffers[i],
-                m_rt_img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+		{
+			VkImageBlit blit = {};
+			blit.srcOffsets[0] = { 0, 0, 0 };
+			blit.srcOffsets[1] = { int32_t(m_width), int32_t(m_height), 1 };
+			blit.dstOffsets[0] = { 0, 0, 0 };
+			blit.dstOffsets[1] = { int32_t(m_width), int32_t(m_height), 1 };
+			blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			vkCmdBlitImage(m_rt_present_cmd_buffers[i],
+				m_rt_img_denoised.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				m_swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				1, &blit, VK_FILTER_NEAREST);
+		}
 
-		vk_helpers::image_barrier(m_rt_cmd_buffers[i], m_swapchain_images[i], isr,
+		vk_helpers::image_barrier(m_rt_present_cmd_buffers[i], m_swapchain_images[i], isr,
 			VK_PIPELINE_STAGE_2_BLIT_BIT_KHR, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_PIPELINE_STAGE_2_NONE_KHR, VK_ACCESS_2_NONE_KHR, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-		vk_helpers::debug_marker_pop(m_rt_cmd_buffers[i], "Blit");
-		res = vkEndCommandBuffer(m_rt_cmd_buffers[i]);
+		res = vkEndCommandBuffer(m_rt_present_cmd_buffers[i]);
 		if (res != VK_SUCCESS) {
 			throw std::runtime_error("failed to end recording commands");
 		}
@@ -3146,16 +3289,123 @@ void BaseApplication::update_uniform_buffer(uint32_t idx)
 
 void BaseApplication::draw_frame()
 {
-	vkWaitForFences(m_device, 1, &m_fen_flight[m_current_frame_idx], 
-					VK_TRUE, std::numeric_limits<uint64_t>::max());
-	
+	if (m_raytraced) {
+		draw_frame_rt();
+	} else {
+		draw_frame_raster();
+	}
+}
+
+void BaseApplication::draw_frame_rt()
+{
+	vkWaitForFences(m_device, 1, &m_fen_flight[m_current_frame_idx],
+		VK_TRUE, std::numeric_limits<uint64_t>::max());
+
 	uint32_t img_idx;
 	auto res = vkAcquireNextImageKHR(m_device, m_swapchain, std::numeric_limits<uint64_t>::max(),
-						  m_sem_img_available[m_current_frame_idx], 
-						  VK_NULL_HANDLE, &img_idx);
+		m_sem_img_available[m_current_frame_idx],
+		VK_NULL_HANDLE, &img_idx);
 
 	if (res == VK_ERROR_OUT_OF_DATE_KHR) {
-		recreate_swapchain(); 
+		recreate_swapchain();
+		return;
+	} else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+		throw std::runtime_error("failed to acquire swapchain image");
+	}
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	update_uniform_buffer(img_idx);
+
+	{
+		m_denoiser_semaphore->increment();
+
+		VkCommandBufferSubmitInfoKHR cmd_submit = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR, 0 };
+		cmd_submit.commandBuffer = m_rt_cmd_buffers[img_idx];
+		VkSemaphoreSubmitInfoKHR ssi = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR, 0 };
+		ssi.semaphore = m_denoiser_semaphore->get_vk_semaphore();
+		ssi.stageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+		ssi.value = m_denoiser_semaphore->get_value();
+		VkSubmitInfo2KHR submit_info = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR, 0 };
+		submit_info.signalSemaphoreInfoCount = 1;
+		submit_info.pSignalSemaphoreInfos = &ssi;
+		submit_info.commandBufferInfoCount = 1;
+		submit_info.pCommandBufferInfos = &cmd_submit;
+
+		res = vkQueueSubmit2KHR(m_graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+		if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to submit command buffers to queue");
+		}
+	}
+	
+	{
+		m_denoiser->denoise(*m_rt_img_denoised_buffer.get(), *m_rt_img_buffer.get(), *m_denoiser_semaphore.get());
+	}
+
+	{
+		VkCommandBufferSubmitInfoKHR cmd_submit = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR, 0 };
+		cmd_submit.commandBuffer = m_rt_present_cmd_buffers[img_idx];
+
+		VkSemaphoreSubmitInfoKHR wait_sem_denoiser = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR, 0 };
+		wait_sem_denoiser.semaphore = m_denoiser_semaphore->get_vk_semaphore();
+		wait_sem_denoiser.value = m_denoiser_semaphore->get_value();
+		wait_sem_denoiser.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+		VkSemaphoreSubmitInfoKHR wait_sem_img_acq = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR, 0 };
+		wait_sem_img_acq.semaphore = m_sem_img_available[m_current_frame_idx];
+		wait_sem_img_acq.stageMask = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+		std::array<VkSemaphoreSubmitInfoKHR, 2> wait_sems = { wait_sem_img_acq, wait_sem_denoiser };
+
+		VkSemaphoreSubmitInfoKHR signal_sem = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR, 0 };
+		signal_sem.semaphore = m_sem_render_finished[m_current_frame_idx];
+		signal_sem.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+
+		VkSubmitInfo2KHR si = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR, 0 };
+		si.waitSemaphoreInfoCount = wait_sems.size();
+		si.pWaitSemaphoreInfos = wait_sems.data();
+		si.signalSemaphoreInfoCount = 1;
+		si.pSignalSemaphoreInfos = &signal_sem;
+		si.commandBufferInfoCount = 1;
+		si.pCommandBufferInfos = &cmd_submit;
+
+		vkResetFences(m_device, 1, &m_fen_flight[m_current_frame_idx]);
+		res = vkQueueSubmit2KHR(m_graphics_queue, 1, &si, m_fen_flight[m_current_frame_idx]);
+		if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to submit command buffers to queue");
+		}
+	}
+
+	{
+		VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, 0 };
+		pi.waitSemaphoreCount = 1;
+		pi.pWaitSemaphores = &m_sem_render_finished[m_current_frame_idx];
+		VkSwapchainKHR swapchains[] = { m_swapchain };
+		pi.pSwapchains = swapchains;
+		pi.swapchainCount = 1;
+		pi.pImageIndices = &img_idx;
+		pi.pResults = nullptr;
+
+		res = vkQueuePresentKHR(m_present_queue, &pi);
+		if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || m_window_resized) {
+			m_window_resized = false;
+			recreate_swapchain();
+		} else if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swapchain image");
+		}
+	}
+	m_current_frame_idx = (m_current_frame_idx + 1) % MAX_FRAMES_IN_FLIGHT;
+}
+
+void BaseApplication::draw_frame_raster()
+{
+	vkWaitForFences(m_device, 1, &m_fen_flight[m_current_frame_idx],
+		VK_TRUE, std::numeric_limits<uint64_t>::max());
+
+	uint32_t img_idx;
+	auto res = vkAcquireNextImageKHR(m_device, m_swapchain, std::numeric_limits<uint64_t>::max(),
+		m_sem_img_available[m_current_frame_idx],
+		VK_NULL_HANDLE, &img_idx);
+
+	if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+		recreate_swapchain();
 		return;
 	} else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("failed to acquire swapchain image");
@@ -3163,62 +3413,61 @@ void BaseApplication::draw_frame()
 
 	update_uniform_buffer(img_idx);
 
-	VkSemaphoreSubmitInfoKHR wait_sem = {};
-	wait_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
-	wait_sem.semaphore = m_sem_img_available[m_current_frame_idx];
-	if (!m_raytraced) {
-		wait_sem.stageMask =
-			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
-	} else {
-		wait_sem.stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT_KHR;
+	{
+		VkSemaphoreSubmitInfoKHR wait_sem = {};
+		wait_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+		wait_sem.semaphore = m_sem_img_available[m_current_frame_idx];
+		wait_sem.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
+		wait_sem.deviceIndex = 0;
+
+		// signals when everything is done
+		VkSemaphoreSubmitInfoKHR signal_sem = {};
+		signal_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+		signal_sem.semaphore = m_sem_render_finished[m_current_frame_idx];
+		signal_sem.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+		signal_sem.deviceIndex = 0;
+
+		VkCommandBufferSubmitInfoKHR cmd_submit = {};
+		cmd_submit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR;
+		cmd_submit.commandBuffer = m_cmd_buffers[img_idx];
+		cmd_submit.deviceMask = 0;
+
+		VkSubmitInfo2KHR submit_info = {};
+		submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR;
+		submit_info.waitSemaphoreInfoCount = 1;
+		submit_info.pWaitSemaphoreInfos = &wait_sem;
+		submit_info.signalSemaphoreInfoCount = 1;
+		submit_info.pSignalSemaphoreInfos = &signal_sem;
+		submit_info.commandBufferInfoCount = 1;
+		submit_info.pCommandBufferInfos = &cmd_submit;
+
+		// we reset fences here because we need it after checking for swapchain recreation
+		// else we could apply it after vkWaitForFences
+		vkResetFences(m_device, 1, &m_fen_flight[m_current_frame_idx]);
+		res = vkQueueSubmit2KHR(m_graphics_queue, 1, &submit_info, m_fen_flight[m_current_frame_idx]);
+		if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to submit command buffers to queue");
+		}
 	}
-	wait_sem.deviceIndex = 0;
-
-	// signals when everything is done
-	VkSemaphoreSubmitInfoKHR signal_sem = {};
-	signal_sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
-	signal_sem.semaphore = m_sem_render_finished[m_current_frame_idx];
-	signal_sem.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
-	signal_sem.deviceIndex = 0;
-
-	VkCommandBufferSubmitInfoKHR cmd_submit = {};
-	cmd_submit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR;
-	cmd_submit.commandBuffer = m_raytraced ? m_rt_cmd_buffers[img_idx] : m_cmd_buffers[img_idx];
-	cmd_submit.deviceMask = 0;
 	
-	VkSubmitInfo2KHR submit_info = {};
-	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR;
-	submit_info.waitSemaphoreInfoCount = 1;
-	submit_info.pWaitSemaphoreInfos = &wait_sem;
-	submit_info.signalSemaphoreInfoCount = 1;
-	submit_info.pSignalSemaphoreInfos = &signal_sem;
-	submit_info.commandBufferInfoCount = 1;
-	submit_info.pCommandBufferInfos = &cmd_submit;
+	{
+		VkPresentInfoKHR pi = {};
+		pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+		pi.waitSemaphoreCount = 1;
+		pi.pWaitSemaphores = &m_sem_render_finished[m_current_frame_idx];
+		VkSwapchainKHR swapchains[] = { m_swapchain };
+		pi.pSwapchains = swapchains;
+		pi.swapchainCount = 1;
+		pi.pImageIndices = &img_idx;
+		pi.pResults = nullptr;
 
-	// we reset fences here because we need it after checking for swapchain recreation
-	// else we could apply it after vkWaitForFences
-	vkResetFences(m_device, 1, &m_fen_flight[m_current_frame_idx]);
-	res = vkQueueSubmit2KHR(m_graphics_queue, 1, &submit_info, m_fen_flight[m_current_frame_idx]);
-	if (res != VK_SUCCESS) {
-		throw std::runtime_error("failed to submit command buffers to queue");
-	}
-
-	VkPresentInfoKHR pi = {};
-	pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	pi.waitSemaphoreCount = 1;
-	pi.pWaitSemaphores = &m_sem_render_finished[m_current_frame_idx];
-	VkSwapchainKHR swapchains[] = { m_swapchain };
-	pi.pSwapchains = swapchains;
-	pi.swapchainCount = 1;
-	pi.pImageIndices = &img_idx;
-	pi.pResults = nullptr;
-
-	res = vkQueuePresentKHR(m_present_queue, &pi);
-	if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || m_window_resized) {
-		m_window_resized = false;
-		recreate_swapchain();
-	} else if (res != VK_SUCCESS) {
-		throw std::runtime_error("failed to present swapchain image");
+		res = vkQueuePresentKHR(m_present_queue, &pi);
+		if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || m_window_resized) {
+			m_window_resized = false;
+			recreate_swapchain();
+		} else if (res != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swapchain image");
+		}
 	}
 	m_current_frame_idx = (m_current_frame_idx + 1) % MAX_FRAMES_IN_FLIGHT;
 }

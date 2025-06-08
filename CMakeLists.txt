@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.18)
 set(app VulkanExperiments)
 
 project(${app})
+enable_language("CUDA")
 
 set (CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
@@ -23,6 +24,7 @@ set(src
 	src/tiny_obj_loader.cpp
 	src/orbit_camera.cpp
 	src/vma.cpp
+	src/cuda_shared.cu
 )
 
 add_executable(${app} ${src})
@@ -66,6 +68,7 @@ add_subdirectory(${VMA_DIR})
 target_include_directories(${app} PRIVATE ${VMA_DIR}/include)
 target_link_libraries(${app} GPUOpen::VulkanMemoryAllocator)
 
+
 # vulkan headers from Vulkan SDK
 # set(VULKAN_HEADERS_DIR "${EXTERN_DIR}/Vulkan-Headers")
 # target_include_directories(${app} PRIVATE "${VULKAN_HEADERS_DIR}/include")
@@ -77,6 +80,9 @@ else()
 	target_link_directories(${app} PRIVATE $ENV{VULKAN_SDK}/lib)
 	target_link_libraries(${app} shaderc_shared)
 endif()
+
+find_package(CUDAToolkit)
+target_link_libraries(${app} CUDA::cudart)
 
 # download models
 function(download_file url filepath hash_type hash)
